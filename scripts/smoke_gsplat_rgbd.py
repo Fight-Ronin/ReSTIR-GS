@@ -40,7 +40,7 @@ def to_u8_scalar(values: torch.Tensor, valid: torch.Tensor | None = None) -> np.
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render synthetic Gaussians with gsplat RGB+D.")
+    parser = argparse.ArgumentParser(description="Render synthetic Gaussians with gsplat RGB+ED.")
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
@@ -69,4 +69,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

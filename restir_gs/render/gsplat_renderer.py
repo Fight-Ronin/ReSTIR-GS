@@ -28,11 +28,11 @@ def render_rgbd(scene: SyntheticGaussians, camera: PinholeCamera) -> RenderBuffe
         camera.intrinsics,
         width=camera.width,
         height=camera.height,
-        render_mode="RGB+D",
+        render_mode="RGB+ED",
     )
 
     if renders.shape != (1, camera.height, camera.width, 4):
-        raise RuntimeError(f"Expected RGB+D render shape (1,H,W,4), got {tuple(renders.shape)}")
+        raise RuntimeError(f"Expected RGB+ED render shape (1,H,W,4), got {tuple(renders.shape)}")
     if alphas.shape != (1, camera.height, camera.width, 1):
         raise RuntimeError(f"Expected alpha shape (1,H,W,1), got {tuple(alphas.shape)}")
 
@@ -41,4 +41,3 @@ def render_rgbd(scene: SyntheticGaussians, camera: PinholeCamera) -> RenderBuffe
         depth=renders[0, ..., 3].contiguous(),
         alpha=alphas[0, ..., 0].contiguous(),
     )
-
