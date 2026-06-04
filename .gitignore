@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+outputs/
+
+# Local CUDA/PyTorch extension caches should not live in the repo.
+torch_extensions/
+*.egg-info/
+

@@ -1,0 +1,9 @@
+name: restirgs
+channels:
+  - nvidia/label/cuda-12.4.0
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - cuda-toolkit=12.4.0
+  - cuda-nvcc=12.4.99

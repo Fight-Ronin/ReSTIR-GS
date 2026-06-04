@@ -1,0 +1,2 @@
+"""ReSTIR-GS prototype package."""
+
