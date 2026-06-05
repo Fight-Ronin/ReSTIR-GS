@@ -1,19 +1,81 @@
 """Rendering helpers for the ReSTIR-GS prototype."""
 
+from restir_gs.render.aligned_asset_registry import (
+    AlignedAssetManifest,
+    AlignedAssetNormalization,
+    AlignedAssetSpec,
+    ResolvedAlignedAssetSpec,
+    get_aligned_asset_spec,
+    load_aligned_asset_manifest,
+    load_registered_aligned_asset,
+    resolve_aligned_asset_paths,
+)
 from restir_gs.render.ply_loader import (
     AssetCameraInfo,
+    GaussianAssetStats,
     GaussianPlyStats,
+    LoadedGaussianAsset,
     LoadedGaussianPly,
+    load_gaussian_asset,
     load_gaussian_ply,
     load_gaussian_ply_with_stats,
     make_asset_camera,
 )
+from restir_gs.render.orbit_camera import (
+    OrbitCameraState,
+    orbit_camera_config_payload,
+    orbit_state_dolly,
+    orbit_state_from_camera,
+    orbit_state_orbit,
+    orbit_state_pan,
+    orbit_state_to_camera,
+    save_orbit_camera_config,
+)
+from restir_gs.render.scene_normalization import (
+    SceneNormalization,
+    apply_scene_normalization_to_c2w,
+    infer_scene_normalization_from_plys,
+    normalization_rotation_matrix,
+)
+from restir_gs.render.transforms_loader import (
+    ImportedTransformFrame,
+    ImportedTransforms,
+    load_nerfstudio_transforms,
+    opengl_c2w_to_project_viewmat,
+)
 
 __all__ = [
     "AssetCameraInfo",
+    "AlignedAssetManifest",
+    "AlignedAssetNormalization",
+    "AlignedAssetSpec",
+    "GaussianAssetStats",
     "GaussianPlyStats",
+    "ImportedTransformFrame",
+    "ImportedTransforms",
+    "LoadedGaussianAsset",
     "LoadedGaussianPly",
+    "OrbitCameraState",
+    "ResolvedAlignedAssetSpec",
+    "SceneNormalization",
+    "apply_scene_normalization_to_c2w",
+    "get_aligned_asset_spec",
+    "infer_scene_normalization_from_plys",
+    "load_aligned_asset_manifest",
+    "load_gaussian_asset",
     "load_gaussian_ply",
     "load_gaussian_ply_with_stats",
+    "load_nerfstudio_transforms",
+    "load_registered_aligned_asset",
     "make_asset_camera",
+    "normalization_rotation_matrix",
+    "opengl_c2w_to_project_viewmat",
+    "orbit_camera_config_payload",
+    "orbit_state_dolly",
+    "orbit_state_from_camera",
+    "orbit_state_orbit",
+    "orbit_state_pan",
+    "orbit_state_to_camera",
+    "resolve_aligned_asset_paths",
+    "save_orbit_camera_config",
 ]

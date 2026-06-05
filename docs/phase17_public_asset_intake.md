@@ -14,6 +14,8 @@ Default source:
 https://huggingface.co/datasets/Voxel51/gaussian_splatting
 ```
 
+3DGS `.ply` assets are the standard exported format used by tools such as Nerfstudio Splatfacto. Phase 17 only uses 7000-iteration Voxel51 assets for speed and size consistency. The 30000-iteration assets are intentionally out of scope for this phase.
+
 The current Hugging Face file tree stores the 7000-iteration PLYs as:
 
 ```text

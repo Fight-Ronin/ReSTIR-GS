@@ -8,6 +8,7 @@ import torch
 
 from restir_gs.render.ply_loader import (
     SH_C0,
+    load_gaussian_asset,
     load_gaussian_ply,
     load_gaussian_ply_with_stats,
     make_asset_camera,
@@ -63,7 +64,10 @@ def test_load_graphdeco_schema_applies_3dgs_transforms(tmp_path: Path) -> None:
     assert isinstance(load_gaussian_ply(path, device="cpu"), SyntheticGaussians)
     assert loaded.stats.original_count == 2
     assert loaded.stats.loaded_count == 2
+    assert loaded.stats.source_format == "ply"
+    assert loaded.stats.schema == "graphdeco_3dgs_ply"
     assert loaded.stats.color_source == "f_dc"
+    assert loaded.stats.has_sh_rest is False
     assert torch.allclose(scene.means, torch.tensor([[0.0, 0.0, 2.0], [1.0, 0.0, 3.0]]))
     assert torch.allclose(scene.scales, torch.tensor([[1.0, 2.0, 3.0], [4.0, 1.0, 0.5]]), atol=1e-6)
     assert torch.allclose(scene.opacities, torch.sigmoid(torch.tensor([0.0, 2.0])), atol=1e-6)
@@ -75,6 +79,45 @@ def test_load_graphdeco_schema_applies_3dgs_transforms(tmp_path: Path) -> None:
         ]
     )
     assert torch.allclose(scene.colors, expected_colors, atol=1e-6)
+
+
+def test_generic_gaussian_asset_loader_records_schema_and_sh_rest(tmp_path: Path) -> None:
+    path = tmp_path / "nerfstudio.ply"
+    properties = graphdeco_properties() + [("float", "f_rest_0")]
+    write_ply(path, properties, [[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25]])
+
+    loaded = load_gaussian_asset(path, device="cpu")
+
+    assert loaded.stats.source_format == "ply"
+    assert loaded.stats.schema == "graphdeco_3dgs_ply"
+    assert loaded.stats.has_sh_rest is True
+    assert loaded.stats.loaded_count == 1
+    assert torch.allclose(loaded.scene.means, torch.tensor([[0.0, 0.0, 2.0]]))
+
+
+def test_generic_gaussian_asset_loader_rejects_plain_point_cloud(tmp_path: Path) -> None:
+    path = tmp_path / "points.ply"
+    write_ply(path, [("float", "x"), ("float", "y"), ("float", "z")], [[0.0, 0.0, 0.0]])
+
+    with pytest.raises(ValueError, match="missing required fields"):
+        load_gaussian_asset(path, device="cpu")
+
+
+def test_ply_compatibility_wrapper_matches_generic_loader(tmp_path: Path) -> None:
+    path = tmp_path / "graphdeco.ply"
+    write_ply(
+        path,
+        graphdeco_properties(),
+        [[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+    )
+
+    generic = load_gaussian_asset(path, device="cpu")
+    compat = load_gaussian_ply_with_stats(path, device="cpu")
+
+    assert torch.allclose(generic.scene.means, compat.scene.means)
+    assert torch.allclose(generic.scene.scales, compat.scene.scales)
+    assert torch.allclose(generic.scene.colors, compat.scene.colors)
+    assert compat.stats.schema == generic.stats.schema
 
 
 def test_load_rgb_schema_fallback_normalizes_uchar_colors(tmp_path: Path) -> None:

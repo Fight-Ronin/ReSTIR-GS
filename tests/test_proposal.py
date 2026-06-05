@@ -77,6 +77,21 @@ def test_geometric_proposal_is_finite_normalized_and_falls_back_to_uniform() -> 
     assert proposal[0, 0, 0] > proposal[0, 0, 1]
 
 
+def test_geometric_proposal_rejects_negative_distance_epsilon() -> None:
+    rgb = torch.ones((1, 1, 3), dtype=torch.float32)
+    position = torch.zeros((1, 1, 3), dtype=torch.float32)
+    normal = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    valid = torch.ones((1, 1), dtype=torch.bool)
+    gbuffer = make_gbuffer(rgb, position, normal, valid, valid)
+
+    try:
+        compute_geometric_proposal_distribution(gbuffer, make_simple_lights(), distance_epsilon=-1e-4)
+    except ValueError as exc:
+        assert "distance_epsilon" in str(exc)
+    else:
+        raise AssertionError("Expected negative distance_epsilon to fail.")
+
+
 def test_candidate_sampling_is_deterministic_and_gathers_probs() -> None:
     proposal = torch.tensor([[[0.1, 0.2, 0.7], [0.3, 0.3, 0.4]]], dtype=torch.float32)
 

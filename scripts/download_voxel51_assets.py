@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -81,6 +80,8 @@ def download_voxel51_asset(asset: Voxel51Asset) -> None:
 
     try:
         with urllib.request.urlopen(asset.url) as response:
+            expected_size = response.headers.get("Content-Length")
+            expected_size_int = int(expected_size) if expected_size and expected_size.isdigit() else None
             with partial_path.open("wb") as handle:
                 while True:
                     chunk = response.read(CHUNK_SIZE)
@@ -97,6 +98,11 @@ def download_voxel51_asset(asset: Voxel51Asset) -> None:
         if partial_path.exists():
             partial_path.unlink()
         raise RuntimeError(f"Downloaded empty asset for {asset.scene}: {asset.url}")
+    if expected_size_int is not None and size != expected_size_int:
+        partial_path.unlink()
+        raise RuntimeError(
+            f"Partial download for {asset.scene}: expected {expected_size_int} bytes, got {size} bytes."
+        )
 
     partial_path.replace(asset.path)
 

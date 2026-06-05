@@ -16,11 +16,31 @@ SH_C0 = 0.2820947918
 
 
 @dataclass(frozen=True)
-class GaussianPlyStats:
+class GaussianAssetStats:
     path: str
+    source_format: str
+    schema: str
     original_count: int
     loaded_count: int
     color_source: str
+    has_sh_rest: bool
+
+
+@dataclass(frozen=True)
+class LoadedGaussianAsset:
+    scene: SyntheticGaussians
+    stats: GaussianAssetStats
+
+
+@dataclass(frozen=True)
+class GaussianPlyStats:
+    path: str
+    source_format: str
+    schema: str
+    original_count: int
+    loaded_count: int
+    color_source: str
+    has_sh_rest: bool
 
 
 @dataclass(frozen=True)
@@ -53,12 +73,45 @@ def load_gaussian_ply(
     return load_gaussian_ply_with_stats(path, device=device, max_gaussians=max_gaussians).scene
 
 
+def load_gaussian_asset(
+    path: str | Path,
+    device: torch.device | str = "cuda",
+    max_gaussians: int | None = None,
+    schema: str = "auto",
+) -> LoadedGaussianAsset:
+    """Load a dataset-agnostic Gaussian asset into renderable tensors."""
+    path = Path(path)
+    if schema not in ("auto", "graphdeco_3dgs_ply"):
+        raise ValueError(f"Unsupported Gaussian asset schema '{schema}'. Expected 'auto' or 'graphdeco_3dgs_ply'.")
+    if path.suffix.lower() != ".ply":
+        raise ValueError(f"Unsupported Gaussian asset format '{path.suffix}'. Phase 23 supports compatible 3DGS PLY only.")
+    return _load_graphdeco_3dgs_ply_asset(path, device=device, max_gaussians=max_gaussians)
+
+
 def load_gaussian_ply_with_stats(
     path: str | Path,
     device: torch.device | str = "cuda",
     max_gaussians: int | None = None,
 ) -> LoadedGaussianPly:
     """Load a 3DGS PLY and return lightweight load metadata."""
+    loaded = load_gaussian_asset(path, device=device, max_gaussians=max_gaussians, schema="graphdeco_3dgs_ply")
+    stats = GaussianPlyStats(
+        path=loaded.stats.path,
+        source_format=loaded.stats.source_format,
+        schema=loaded.stats.schema,
+        original_count=loaded.stats.original_count,
+        loaded_count=loaded.stats.loaded_count,
+        color_source=loaded.stats.color_source,
+        has_sh_rest=loaded.stats.has_sh_rest,
+    )
+    return LoadedGaussianPly(scene=loaded.scene, stats=stats)
+
+
+def _load_graphdeco_3dgs_ply_asset(
+    path: Path,
+    device: torch.device | str = "cuda",
+    max_gaussians: int | None = None,
+) -> LoadedGaussianAsset:
     path = Path(path)
     if max_gaussians is not None and max_gaussians <= 0:
         raise ValueError(f"Expected positive max_gaussians or None, got {max_gaussians}")
@@ -76,6 +129,7 @@ def load_gaussian_ply_with_stats(
     required = ["x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
     _require_fields(names, required, path)
     color_source = _detect_color_source(names, path)
+    has_sh_rest = any(name.startswith("f_rest_") for name in names)
 
     indices = _deterministic_subsample_indices(original_count, max_gaussians)
     means = _stack_fields(vertices, ["x", "y", "z"], indices)
@@ -96,13 +150,16 @@ def load_gaussian_ply_with_stats(
         opacities=torch.tensor(opacities, dtype=torch.float32, device=device),
         colors=torch.tensor(colors, dtype=torch.float32, device=device),
     )
-    stats = GaussianPlyStats(
+    stats = GaussianAssetStats(
         path=str(path),
+        source_format="ply",
+        schema="graphdeco_3dgs_ply",
         original_count=original_count,
         loaded_count=int(indices.shape[0]),
         color_source=color_source,
+        has_sh_rest=has_sh_rest,
     )
-    return LoadedGaussianPly(scene=scene, stats=stats)
+    return LoadedGaussianAsset(scene=scene, stats=stats)
 
 
 def make_asset_camera(

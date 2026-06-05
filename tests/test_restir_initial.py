@@ -6,9 +6,13 @@ import torch
 
 from restir_gs.lighting.deferred import PointLights, evaluate_selected_light_diffuse
 from restir_gs.render.gbuffer import GBuffer
+from restir_gs.restir.proposal import CandidateSamples
 from restir_gs.restir.initial import (
+    estimate_proposal_lighting,
     estimate_ris_initial_diffuse,
+    estimate_ris_initial_lighting,
     estimate_uniform_diffuse,
+    evaluate_selected_light_contribution,
     sample_uniform_light_candidates,
 )
 
@@ -104,6 +108,123 @@ def test_ris_k1_matches_uniform_one_sample_for_positive_target() -> None:
     assert torch.allclose(ris.composite_rgb, uniform.composite_rgb)
     assert torch.equal(reservoir.light_indices, torch.tensor([[1]]))
     assert torch.equal(reservoir.M, torch.tensor([[1]]))
+
+
+def test_blinn_phong_proposal_estimator_matches_closed_form() -> None:
+    rgb = torch.ones((1, 1, 3), dtype=torch.float32)
+    position = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    normal = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    valid = torch.ones((1, 1), dtype=torch.bool)
+    gbuffer = make_gbuffer(rgb, position, normal, valid, valid)
+    lights = PointLights(
+        positions_cam=torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32),
+        colors=torch.ones((1, 3), dtype=torch.float32),
+        intensities=torch.ones((1,), dtype=torch.float32),
+    )
+    samples = CandidateSamples(
+        light_indices=torch.zeros((1, 1, 1), dtype=torch.long),
+        proposal_probs=torch.ones((1, 1, 1), dtype=torch.float32),
+    )
+
+    buffers = estimate_proposal_lighting(
+        gbuffer,
+        lights,
+        samples,
+        target_mode="blinn_phong",
+        specular_strength=0.5,
+        shininess=4.0,
+        distance_epsilon=0.0,
+        ambient=0.2,
+    )
+
+    expected = torch.ones((1, 1, 3), dtype=torch.float32) * ((1.0 / math.pi) + 0.5)
+    assert torch.allclose(buffers.contribution_rgb, expected, atol=1e-6)
+    assert torch.allclose(buffers.composite_rgb, rgb * 0.2 + expected, atol=1e-6)
+
+
+def test_blinn_phong_ris_k1_matches_blinn_proposal_mc_for_positive_target() -> None:
+    rgb = torch.ones((1, 1, 3), dtype=torch.float32)
+    position = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    normal = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    valid = torch.ones((1, 1), dtype=torch.bool)
+    gbuffer = make_gbuffer(rgb, position, normal, valid, valid)
+    lights = PointLights(
+        positions_cam=torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32),
+        colors=torch.ones((1, 3), dtype=torch.float32),
+        intensities=torch.ones((1,), dtype=torch.float32),
+    )
+    candidates = torch.zeros((1, 1, 1), dtype=torch.long)
+    samples = CandidateSamples(light_indices=candidates, proposal_probs=torch.ones((1, 1, 1), dtype=torch.float32))
+
+    mc = estimate_proposal_lighting(gbuffer, lights, samples, target_mode="blinn_phong", distance_epsilon=0.0)
+    ris, reservoir = estimate_ris_initial_lighting(
+        gbuffer,
+        lights,
+        candidates,
+        proposal_probs=samples.proposal_probs,
+        target_mode="blinn_phong",
+        selection_seed=77,
+        distance_epsilon=0.0,
+    )
+
+    assert torch.allclose(ris.contribution_rgb, mc.contribution_rgb)
+    assert torch.allclose(ris.composite_rgb, mc.composite_rgb)
+    assert reservoir.valid_mask.item()
+    assert torch.equal(reservoir.M, torch.tensor([[1]]))
+
+
+def test_blinn_phong_zero_specular_ris_matches_diffuse_ris() -> None:
+    rgb = torch.ones((1, 1, 3), dtype=torch.float32)
+    position = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    normal = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    valid = torch.ones((1, 1), dtype=torch.bool)
+    gbuffer = make_gbuffer(rgb, position, normal, valid, valid)
+    lights = PointLights(
+        positions_cam=torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]], dtype=torch.float32),
+        colors=torch.ones((2, 3), dtype=torch.float32),
+        intensities=torch.ones((2,), dtype=torch.float32),
+    )
+    candidates = torch.tensor([[[0, 1]]], dtype=torch.long)
+
+    diffuse, diffuse_reservoir = estimate_ris_initial_diffuse(gbuffer, lights, candidates, selection_seed=5, distance_epsilon=0.0)
+    blinn, blinn_reservoir = estimate_ris_initial_lighting(
+        gbuffer,
+        lights,
+        candidates,
+        target_mode="blinn_phong",
+        specular_strength=0.0,
+        selection_seed=5,
+        distance_epsilon=0.0,
+    )
+
+    assert torch.allclose(blinn.contribution_rgb, diffuse.diffuse_rgb)
+    assert torch.allclose(blinn.composite_rgb, diffuse.composite_rgb)
+    assert torch.equal(blinn_reservoir.light_indices, diffuse_reservoir.light_indices)
+
+
+def test_unsupported_lighting_target_mode_fails_loudly() -> None:
+    rgb = torch.ones((1, 1, 3), dtype=torch.float32)
+    position = torch.zeros((1, 1, 3), dtype=torch.float32)
+    normal = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32)
+    valid = torch.ones((1, 1), dtype=torch.bool)
+    gbuffer = make_gbuffer(rgb, position, normal, valid, valid)
+    lights = PointLights(
+        positions_cam=torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32),
+        colors=torch.ones((1, 3), dtype=torch.float32),
+        intensities=torch.ones((1,), dtype=torch.float32),
+    )
+
+    try:
+        evaluate_selected_light_contribution(
+            gbuffer,
+            lights,
+            torch.zeros((1, 1, 1), dtype=torch.long),
+            target_mode="not_a_mode",  # type: ignore[arg-type]
+        )
+    except ValueError as exc:
+        assert "target_mode" in str(exc)
+    else:
+        raise AssertionError("Expected unsupported target mode to fail.")
 
 
 def test_zero_target_and_invalid_pixels_preserve_original_rgb() -> None:

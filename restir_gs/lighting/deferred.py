@@ -7,7 +7,6 @@ import torch
 
 from restir_gs.render.gbuffer import GBuffer
 
-
 @dataclass(frozen=True)
 class PointLights:
     positions_cam: torch.Tensor
@@ -19,6 +18,7 @@ class PointLights:
 class LightingBuffers:
     irradiance_rgb: torch.Tensor
     diffuse_rgb: torch.Tensor
+    specular_rgb: torch.Tensor
     shade_rgb: torch.Tensor
     composite_rgb: torch.Tensor
     valid_mask: torch.Tensor
@@ -59,6 +59,11 @@ def _check_lights(lights: PointLights) -> None:
         )
 
 
+def _check_distance_epsilon(distance_epsilon: float) -> None:
+    if distance_epsilon < 0.0:
+        raise ValueError(f"Expected non-negative distance_epsilon, got {distance_epsilon}")
+
+
 def _evaluate_selected_light_irradiance(
     gbuffer: GBuffer,
     lights: PointLights,
@@ -66,6 +71,7 @@ def _evaluate_selected_light_irradiance(
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
 ) -> torch.Tensor:
+    _check_distance_epsilon(distance_epsilon)
     if light_indices.ndim != 3:
         raise ValueError(f"Expected light indices shape [H,W,K], got {tuple(light_indices.shape)}")
     if light_indices.shape[:2] != gbuffer.rgb.shape[:2]:
@@ -89,7 +95,8 @@ def _evaluate_selected_light_irradiance(
     light_vec = selected_positions - gbuffer.position_cam[..., None, :]
     dist2_raw = torch.sum(light_vec * light_vec, dim=-1)
     dist2 = dist2_raw + distance_epsilon
-    wi = light_vec * torch.rsqrt(dist2_raw.clamp_min(distance_epsilon)[..., None])
+    direction_epsilon = max(float(distance_epsilon), 1e-8)
+    wi = light_vec * torch.rsqrt(dist2_raw.clamp_min(direction_epsilon)[..., None])
     cos_theta = torch.sum(gbuffer.normal_cam[..., None, :] * wi, dim=-1)
     if two_sided:
         cos_theta = cos_theta.abs()
@@ -117,6 +124,80 @@ def evaluate_selected_light_diffuse(
         distance_epsilon=distance_epsilon,
     )
     return gbuffer.rgb[..., None, :] * irradiance / math.pi
+
+
+def evaluate_selected_light_blinn_phong(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    light_indices: torch.Tensor,
+    specular_strength: float = 0.15,
+    shininess: float = 24.0,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Evaluate selected point-light diffuse and Blinn-Phong specular RGB contributions."""
+    _check_distance_epsilon(distance_epsilon)
+    if specular_strength < 0.0:
+        raise ValueError(f"Expected non-negative specular_strength, got {specular_strength}")
+    if shininess <= 0.0:
+        raise ValueError(f"Expected positive shininess, got {shininess}")
+    if light_indices.ndim != 3:
+        raise ValueError(f"Expected light indices shape [H,W,K], got {tuple(light_indices.shape)}")
+    if light_indices.shape[:2] != gbuffer.rgb.shape[:2]:
+        raise ValueError(f"Expected light indices image shape {tuple(gbuffer.rgb.shape[:2])}, got {tuple(light_indices.shape[:2])}")
+    _check_lights(lights)
+    if light_indices.numel() > 0:
+        if int(light_indices.min().detach().cpu()) < 0 or int(light_indices.max().detach().cpu()) >= lights.positions_cam.shape[0]:
+            raise ValueError("Light indices must be in [0, light_count).")
+
+    dtype = gbuffer.rgb.dtype
+    device = gbuffer.rgb.device
+    indices = light_indices.to(device=device, dtype=torch.long)
+    positions_cam = lights.positions_cam.to(device=device, dtype=dtype)
+    colors = lights.colors.to(device=device, dtype=dtype)
+    intensities = lights.intensities.to(device=device, dtype=dtype)
+
+    selected_positions = positions_cam[indices]
+    selected_colors = colors[indices]
+    selected_intensities = intensities[indices]
+
+    light_vec = selected_positions - gbuffer.position_cam[..., None, :]
+    dist2_raw = torch.sum(light_vec * light_vec, dim=-1)
+    dist2 = dist2_raw + distance_epsilon
+    direction_epsilon = max(float(distance_epsilon), 1e-8)
+    wi = light_vec * torch.rsqrt(dist2_raw.clamp_min(direction_epsilon)[..., None])
+
+    normal = gbuffer.normal_cam[..., None, :]
+    cos_theta = torch.sum(normal * wi, dim=-1)
+    if two_sided:
+        cos_theta = cos_theta.abs()
+    else:
+        cos_theta = cos_theta.clamp_min(0.0)
+
+    irradiance = selected_colors * selected_intensities[..., None] * cos_theta[..., None] / dist2[..., None]
+    diffuse = gbuffer.rgb[..., None, :] * irradiance / math.pi
+
+    view_vec = -gbuffer.position_cam
+    view_len = torch.linalg.norm(view_vec, dim=-1).clamp_min(direction_epsilon)
+    view_dir = view_vec / view_len[..., None]
+    half_vec = wi + view_dir[..., None, :]
+    half_len = torch.linalg.norm(half_vec, dim=-1).clamp_min(direction_epsilon)
+    half_dir = half_vec / half_len[..., None]
+    spec_cos = torch.sum(normal * half_dir, dim=-1)
+    if two_sided:
+        spec_cos = spec_cos.abs()
+    else:
+        spec_cos = spec_cos.clamp_min(0.0)
+    specular = (
+        selected_colors
+        * selected_intensities[..., None]
+        * float(specular_strength)
+        * torch.pow(spec_cos.clamp_min(0.0), float(shininess))[..., None]
+        / dist2[..., None]
+    )
+
+    valid = (gbuffer.valid_mask & gbuffer.normal_mask)[..., None, None]
+    return torch.where(valid, diffuse, torch.zeros_like(diffuse)), torch.where(valid, specular, torch.zeros_like(specular))
 
 
 def shade_deferred_lambertian(
@@ -166,6 +247,72 @@ def shade_deferred_lambertian(
     return LightingBuffers(
         irradiance_rgb=irradiance_rgb,
         diffuse_rgb=diffuse_rgb,
+        specular_rgb=torch.zeros_like(diffuse_rgb),
+        shade_rgb=shade_rgb,
+        composite_rgb=composite_rgb,
+        valid_mask=valid_mask,
+    )
+
+
+def shade_deferred_blinn_phong(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    ambient: float = 0.2,
+    specular_strength: float = 0.15,
+    shininess: float = 24.0,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+    chunk_size: int = 64,
+) -> LightingBuffers:
+    """Evaluate all point lights with diffuse plus Blinn-Phong specular lighting."""
+    if chunk_size <= 0:
+        raise ValueError(f"Expected positive chunk size, got {chunk_size}")
+    _check_lights(lights)
+
+    device = gbuffer.rgb.device
+    valid_flat = (gbuffer.valid_mask & gbuffer.normal_mask).reshape(-1).to(torch.bool)
+
+    diffuse_flat = torch.zeros_like(gbuffer.rgb.reshape(-1, 3))
+    specular_flat = torch.zeros_like(gbuffer.rgb.reshape(-1, 3))
+    for start in range(0, lights.positions_cam.shape[0], chunk_size):
+        end = min(start + chunk_size, lights.positions_cam.shape[0])
+        light_indices = torch.arange(start, end, dtype=torch.long, device=device)
+        light_indices = light_indices.expand(gbuffer.rgb.shape[0], gbuffer.rgb.shape[1], end - start)
+        diffuse, specular = evaluate_selected_light_blinn_phong(
+            gbuffer,
+            lights,
+            light_indices,
+            specular_strength=specular_strength,
+            shininess=shininess,
+            two_sided=two_sided,
+            distance_epsilon=distance_epsilon,
+        )
+        diffuse_flat += diffuse.sum(dim=2).reshape(-1, 3)
+        specular_flat += specular.sum(dim=2).reshape(-1, 3)
+
+    diffuse_flat = torch.where(valid_flat[:, None], diffuse_flat, torch.zeros_like(diffuse_flat))
+    specular_flat = torch.where(valid_flat[:, None], specular_flat, torch.zeros_like(specular_flat))
+
+    diffuse_rgb = diffuse_flat.reshape_as(gbuffer.rgb)
+    specular_rgb = specular_flat.reshape_as(gbuffer.rgb)
+    valid_mask = valid_flat.reshape(gbuffer.valid_mask.shape)
+    dynamic_shade = torch.where(
+        gbuffer.rgb.abs() > 1e-8,
+        diffuse_rgb / torch.clamp(gbuffer.rgb, min=1e-8),
+        torch.zeros_like(gbuffer.rgb),
+    )
+    shade_rgb = torch.where(
+        valid_mask[..., None],
+        torch.full_like(gbuffer.rgb, float(ambient)) + dynamic_shade,
+        torch.zeros_like(gbuffer.rgb),
+    )
+    composite_lit = gbuffer.rgb * float(ambient) + diffuse_rgb + specular_rgb
+    composite_rgb = torch.where(valid_mask[..., None], composite_lit, gbuffer.rgb)
+
+    return LightingBuffers(
+        irradiance_rgb=dynamic_shade * math.pi,
+        diffuse_rgb=diffuse_rgb,
+        specular_rgb=specular_rgb,
         shade_rgb=shade_rgb,
         composite_rgb=composite_rgb,
         valid_mask=valid_mask,

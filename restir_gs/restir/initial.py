@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 
-from restir_gs.lighting.deferred import PointLights, evaluate_selected_light_diffuse
+from restir_gs.lighting.deferred import PointLights, evaluate_selected_light_blinn_phong, evaluate_selected_light_diffuse
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.restir.proposal import CandidateSamples
+
+
+LightingTargetMode = Literal["diffuse", "blinn_phong"]
 
 
 @dataclass(frozen=True)
 class EstimatorBuffers:
     diffuse_rgb: torch.Tensor
+    composite_rgb: torch.Tensor
+    valid_mask: torch.Tensor
+
+
+@dataclass(frozen=True)
+class LightingEstimatorBuffers:
+    contribution_rgb: torch.Tensor
     composite_rgb: torch.Tensor
     valid_mask: torch.Tensor
 
@@ -64,14 +75,17 @@ def estimate_uniform_diffuse(
     """Estimate all-light diffuse with uniform sampled candidates."""
     if candidates.ndim != 3:
         raise ValueError(f"Expected candidates shape [H,W,K], got {tuple(candidates.shape)}")
-    candidate_count = candidates.shape[-1]
-    light_count = lights.positions_cam.shape[0]
-    diffuse_candidates = evaluate_selected_light_diffuse(gbuffer, lights, candidates)
-    diffuse_rgb = diffuse_candidates.sum(dim=2) * (float(light_count) / float(candidate_count))
-    valid_mask = gbuffer.valid_mask & gbuffer.normal_mask
-    diffuse_rgb = torch.where(valid_mask[..., None], diffuse_rgb, torch.zeros_like(diffuse_rgb))
-    composite_rgb = _compose_estimate(gbuffer, diffuse_rgb, valid_mask, ambient)
-    return EstimatorBuffers(diffuse_rgb=diffuse_rgb, composite_rgb=composite_rgb, valid_mask=valid_mask)
+    samples = CandidateSamples(
+        light_indices=candidates,
+        proposal_probs=torch.full_like(
+            candidates,
+            fill_value=1.0 / float(lights.positions_cam.shape[0]),
+            dtype=gbuffer.rgb.dtype,
+            device=gbuffer.rgb.device,
+        ),
+    )
+    buffers = estimate_proposal_lighting(gbuffer, lights, samples, ambient=ambient, target_mode="diffuse")
+    return EstimatorBuffers(diffuse_rgb=buffers.contribution_rgb, composite_rgb=buffers.composite_rgb, valid_mask=buffers.valid_mask)
 
 
 def estimate_proposal_diffuse(
@@ -83,21 +97,48 @@ def estimate_proposal_diffuse(
     distance_epsilon: float = 1e-4,
 ) -> EstimatorBuffers:
     """Estimate all-light diffuse from samples drawn from an arbitrary proposal."""
+    buffers = estimate_proposal_lighting(
+        gbuffer,
+        lights,
+        samples,
+        ambient=ambient,
+        target_mode="diffuse",
+        two_sided=two_sided,
+        distance_epsilon=distance_epsilon,
+    )
+    return EstimatorBuffers(diffuse_rgb=buffers.contribution_rgb, composite_rgb=buffers.composite_rgb, valid_mask=buffers.valid_mask)
+
+
+def estimate_proposal_lighting(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    samples: CandidateSamples,
+    ambient: float = 0.2,
+    target_mode: LightingTargetMode = "diffuse",
+    specular_strength: float = 0.15,
+    shininess: float = 24.0,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> LightingEstimatorBuffers:
+    """Estimate all-light contribution from samples drawn from an arbitrary proposal."""
     _check_sample_shapes(samples)
-    diffuse_candidates = evaluate_selected_light_diffuse(
+    contribution_candidates = evaluate_selected_light_contribution(
         gbuffer,
         lights,
         samples.light_indices,
+        target_mode=target_mode,
+        specular_strength=specular_strength,
+        shininess=shininess,
         two_sided=two_sided,
         distance_epsilon=distance_epsilon,
     )
     proposal_probs = samples.proposal_probs.to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
-    weighted = diffuse_candidates / proposal_probs.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)[..., None]
-    diffuse_rgb = weighted.mean(dim=2)
+    weighted = contribution_candidates / proposal_probs.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)[..., None]
+    contribution_rgb = weighted.mean(dim=2)
     valid_mask = gbuffer.valid_mask & gbuffer.normal_mask
-    diffuse_rgb = torch.where(valid_mask[..., None], diffuse_rgb, torch.zeros_like(diffuse_rgb))
-    composite_rgb = _compose_estimate(gbuffer, diffuse_rgb, valid_mask, ambient)
-    return EstimatorBuffers(diffuse_rgb=diffuse_rgb, composite_rgb=composite_rgb, valid_mask=valid_mask)
+    contribution_rgb = torch.where(valid_mask[..., None], contribution_rgb, torch.zeros_like(contribution_rgb))
+    composite_rgb = _compose_estimate(gbuffer, contribution_rgb, valid_mask, ambient)
+    return LightingEstimatorBuffers(contribution_rgb=contribution_rgb, composite_rgb=composite_rgb, valid_mask=valid_mask)
 
 
 def estimate_ris_initial_diffuse(
@@ -111,6 +152,39 @@ def estimate_ris_initial_diffuse(
     distance_epsilon: float = 1e-4,
 ) -> tuple[EstimatorBuffers, ReservoirState]:
     """Estimate diffuse with an initial weighted reservoir over light candidates."""
+    buffers, reservoir = estimate_ris_initial_lighting(
+        gbuffer,
+        lights,
+        candidates,
+        selection_seed=selection_seed,
+        ambient=ambient,
+        proposal_probs=proposal_probs,
+        target_mode="diffuse",
+        two_sided=two_sided,
+        distance_epsilon=distance_epsilon,
+    )
+    diffuse_buffers = EstimatorBuffers(
+        diffuse_rgb=buffers.contribution_rgb,
+        composite_rgb=buffers.composite_rgb,
+        valid_mask=buffers.valid_mask,
+    )
+    return diffuse_buffers, reservoir
+
+
+def estimate_ris_initial_lighting(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    candidates: torch.Tensor,
+    selection_seed: int = 2029,
+    ambient: float = 0.2,
+    proposal_probs: torch.Tensor | None = None,
+    target_mode: LightingTargetMode = "diffuse",
+    specular_strength: float = 0.15,
+    shininess: float = 24.0,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> tuple[LightingEstimatorBuffers, ReservoirState]:
+    """Estimate all-light contribution with an initial weighted reservoir."""
     if candidates.ndim != 3:
         raise ValueError(f"Expected candidates shape [H,W,K], got {tuple(candidates.shape)}")
     if proposal_probs is not None and proposal_probs.shape != candidates.shape:
@@ -118,14 +192,17 @@ def estimate_ris_initial_diffuse(
 
     height, width, candidate_count = candidates.shape
     light_count = lights.positions_cam.shape[0]
-    diffuse_candidates = evaluate_selected_light_diffuse(
+    contribution_candidates = evaluate_selected_light_contribution(
         gbuffer,
         lights,
         candidates,
+        target_mode=target_mode,
+        specular_strength=specular_strength,
+        shininess=shininess,
         two_sided=two_sided,
         distance_epsilon=distance_epsilon,
     )
-    target_values = _luminance(diffuse_candidates).clamp_min(0.0)
+    target_values = _luminance(contribution_candidates).clamp_min(0.0)
     if proposal_probs is None:
         proposal_q = torch.full_like(target_values, 1.0 / float(light_count))
     else:
@@ -146,8 +223,8 @@ def estimate_ris_initial_diffuse(
     selected_index_gather = selected_slots[..., None]
     selected_light_indices = torch.gather(candidates.to(gbuffer.rgb.device), dim=-1, index=selected_index_gather).squeeze(-1)
     selected_target = torch.gather(target_values, dim=-1, index=selected_index_gather).squeeze(-1)
-    selected_diffuse = torch.gather(
-        diffuse_candidates,
+    selected_contribution = torch.gather(
+        contribution_candidates,
         dim=2,
         index=selected_slots[..., None, None].expand(height, width, 1, 3),
     ).squeeze(2)
@@ -155,8 +232,12 @@ def estimate_ris_initial_diffuse(
     W = torch.zeros_like(weight_sum)
     positive = valid_mask & (selected_target > 0.0)
     W[positive] = weight_sum[positive] / (float(candidate_count) * selected_target[positive])
-    diffuse_rgb = torch.where(positive[..., None], selected_diffuse * W[..., None], torch.zeros_like(selected_diffuse))
-    composite_rgb = _compose_estimate(gbuffer, diffuse_rgb, positive, ambient)
+    contribution_rgb = torch.where(
+        positive[..., None],
+        selected_contribution * W[..., None],
+        torch.zeros_like(selected_contribution),
+    )
+    composite_rgb = _compose_estimate(gbuffer, contribution_rgb, positive, ambient)
     M = torch.where(
         base_valid,
         torch.full_like(selected_light_indices, candidate_count, dtype=torch.long),
@@ -172,8 +253,41 @@ def estimate_ris_initial_diffuse(
         M=M,
         valid_mask=positive,
     )
-    buffers = EstimatorBuffers(diffuse_rgb=diffuse_rgb, composite_rgb=composite_rgb, valid_mask=positive)
+    buffers = LightingEstimatorBuffers(contribution_rgb=contribution_rgb, composite_rgb=composite_rgb, valid_mask=positive)
     return buffers, reservoir
+
+
+def evaluate_selected_light_contribution(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    light_indices: torch.Tensor,
+    target_mode: LightingTargetMode = "diffuse",
+    specular_strength: float = 0.15,
+    shininess: float = 24.0,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> torch.Tensor:
+    """Evaluate candidate contribution for the requested RIS target mode."""
+    if target_mode == "diffuse":
+        return evaluate_selected_light_diffuse(
+            gbuffer,
+            lights,
+            light_indices,
+            two_sided=two_sided,
+            distance_epsilon=distance_epsilon,
+        )
+    if target_mode == "blinn_phong":
+        diffuse, specular = evaluate_selected_light_blinn_phong(
+            gbuffer,
+            lights,
+            light_indices,
+            specular_strength=specular_strength,
+            shininess=shininess,
+            two_sided=two_sided,
+            distance_epsilon=distance_epsilon,
+        )
+        return diffuse + specular
+    raise ValueError(f"Unsupported RIS target_mode '{target_mode}'. Expected 'diffuse' or 'blinn_phong'.")
 
 
 def _check_sample_shapes(samples: CandidateSamples) -> None:
@@ -192,9 +306,9 @@ def _luminance(rgb: torch.Tensor) -> torch.Tensor:
 
 def _compose_estimate(
     gbuffer: GBuffer,
-    diffuse_rgb: torch.Tensor,
+    contribution_rgb: torch.Tensor,
     valid_mask: torch.Tensor,
     ambient: float,
 ) -> torch.Tensor:
-    composite_lit = gbuffer.rgb * float(ambient) + diffuse_rgb
+    composite_lit = gbuffer.rgb * float(ambient) + contribution_rgb
     return torch.where(valid_mask[..., None], composite_lit, gbuffer.rgb)

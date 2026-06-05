@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "asset_id": "dxgl_apple",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/vCHDLxjWG65d/dataset",
+      "dataset_root": "outputs/aligned_assets/dxgl/apple",
+      "splat_url": "https://dx.gl/splat/apple.ply",
+      "splat_path": "outputs/aligned_assets/dxgl/apple_splat/apple.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    }
+  ]
+}

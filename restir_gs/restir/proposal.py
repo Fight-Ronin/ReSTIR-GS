@@ -21,6 +21,8 @@ def compute_geometric_proposal_distribution(
     distance_epsilon: float = 1e-4,
 ) -> torch.Tensor:
     """Compute per-pixel geometric proposal probabilities over all lights."""
+    if distance_epsilon < 0.0:
+        raise ValueError(f"Expected non-negative distance_epsilon, got {distance_epsilon}")
     if lights.positions_cam.ndim != 2 or lights.positions_cam.shape[-1] != 3:
         raise ValueError(f"Expected light positions shape [N,3], got {tuple(lights.positions_cam.shape)}")
     if lights.colors.shape != lights.positions_cam.shape:
@@ -39,7 +41,8 @@ def compute_geometric_proposal_distribution(
     light_vec = positions_cam[None, None, :, :] - gbuffer.position_cam[..., None, :]
     dist2_raw = torch.sum(light_vec * light_vec, dim=-1)
     dist2 = dist2_raw + distance_epsilon
-    wi = light_vec * torch.rsqrt(dist2_raw.clamp_min(distance_epsilon)[..., None])
+    direction_epsilon = max(float(distance_epsilon), 1e-8)
+    wi = light_vec * torch.rsqrt(dist2_raw.clamp_min(direction_epsilon)[..., None])
     cos_theta = torch.sum(gbuffer.normal_cam[..., None, :] * wi, dim=-1)
     if two_sided:
         cos_theta = cos_theta.abs()
