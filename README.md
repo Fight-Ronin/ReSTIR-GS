@@ -1,6 +1,8 @@
 # ReSTIR-GS
 
-Minimal Windows-native prototype setup for ReSTIR-GS. Phase 1 uses deterministic synthetic Gaussians to verify `gsplat` RGB/expected-depth/alpha rendering before adding `.ply` loading, normal estimation, lighting, or ReSTIR.
+Windows-native ReSTIR-GS prototype. The current active path is manifest-driven aligned 3DGS assets, pseudo G-buffers, scene-stable world lights, initial RIS, and previous-frame temporal reservoir reuse.
+
+For the concise current workflow, see `docs/active_workflow.md`. For the module map and historical boundaries, see `docs/current_architecture.md`.
 
 ## Environment
 
@@ -14,7 +16,39 @@ pip install -r requirements.txt
 
 The current verified stack is Python 3.10, CUDA toolkit 12.4, PyTorch `2.5.1+cu124`, and `gsplat==1.5.3`.
 
-For the current active pipeline and module map, see `docs/current_architecture.md`.
+## Current Active Workflow
+
+Download aligned testing assets:
+
+```powershell
+python scripts/download_aligned_asset.py --asset-set testing --dry-run
+python scripts/download_aligned_splat.py --asset-set testing --dry-run
+python scripts/download_aligned_asset.py --asset-set testing
+python scripts/download_aligned_splat.py --asset-set testing
+```
+
+Run the active validation path:
+
+```powershell
+scripts\run_active_validation_windows.bat
+```
+
+Inspect an aligned asset interactively:
+
+```powershell
+$env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
+scripts\run_interactive_viewer_windows.bat
+```
+
+Main active outputs:
+
+```text
+outputs/aligned_smoke/
+outputs/aligned_restir/
+outputs/interactive_viewer/
+```
+
+Older synthetic, Voxel51, single-view PLY, and broad ablation sections below are retained for reproduction and context; they are not the preferred expansion surface for new aligned work.
 
 ## Windows gsplat Patch
 
@@ -149,13 +183,13 @@ See `docs/phase15_spatial_mis_reuse.md` for the defensive mixture proposal, MIS 
 
 ## Aligned Dataset Intake
 
-Download the manifest-registered aligned smoke dataset:
+Download the manifest-registered aligned testing set:
 
 ```powershell
-python scripts/download_aligned_asset.py --asset-id dxgl_apple --dry-run
-python scripts/download_aligned_asset.py --asset-id dxgl_apple
-python scripts/download_aligned_splat.py --asset-id dxgl_apple --dry-run
-python scripts/download_aligned_splat.py --asset-id dxgl_apple
+python scripts/download_aligned_asset.py --asset-set testing --dry-run
+python scripts/download_aligned_splat.py --asset-set testing --dry-run
+python scripts/download_aligned_asset.py --asset-set testing
+python scripts/download_aligned_splat.py --asset-set testing
 ```
 
 Run the small manifest-driven smoke matrix:
@@ -168,14 +202,20 @@ The Windows runner calls `vcvars64.bat`, checks the local `gsplat` patch, and us
 
 ```powershell
 $env:RESTIRGS_ALIGNED_MANIFEST="configs\aligned_assets.json"
-$env:RESTIRGS_ALIGNED_ASSET_IDS="dxgl_apple"
+$env:RESTIRGS_ALIGNED_ASSET_SET="testing"
 $env:RESTIRGS_ALIGNED_SMOKE_EXTRA_ARGS="--width 128 --height 128"
+```
+
+For targeted debugging, `RESTIRGS_ALIGNED_ASSET_IDS` overrides `RESTIRGS_ALIGNED_ASSET_SET`:
+
+```powershell
+$env:RESTIRGS_ALIGNED_ASSET_IDS="dxgl_apple,dxgl_drill"
 ```
 
 Direct Python execution remains available from an x64 Visual Studio developer shell or equivalent `vcvars64.bat` environment:
 
 ```powershell
-python scripts/demo_24_aligned_asset_smoke_matrix.py --asset-ids dxgl_apple --device cuda
+python scripts/demo_24_aligned_asset_smoke_matrix.py --asset-set testing --device cuda
 ```
 
 It writes:
@@ -183,10 +223,11 @@ It writes:
 ```text
 outputs/aligned_smoke/aligned_asset_smoke_rows.csv
 outputs/aligned_smoke/aligned_asset_smoke_summary.json
-outputs/aligned_smoke/dxgl_apple/contact.png
+outputs/aligned_smoke/<asset_id>/contact.png
 ```
 
 See `docs/phase28_aligned_asset_registry.md` for the manifest format and dataset-agnostic Gaussian loading boundary.
+See `docs/phase30_aligned_testing_assets.md` for the current aligned testing set.
 
 The older Apple-specific intake commands remain available:
 
@@ -318,6 +359,19 @@ scripts\run_dxgl_temporal_reuse_windows.bat
 It writes CSV/JSON metrics, a contact sheet, and final-frame debug previews under `outputs/aligned_temporal/`.
 
 See `docs/phase27_scene_stable_lights.md` for why the temporal path now uses fixed world-space light identities before converting to per-frame camera-space `PointLights`.
+
+## Aligned ReSTIR Renderer Path
+
+Run the registry-driven aligned ReSTIR renderer path on the active testing asset set:
+
+```powershell
+scripts\run_aligned_asset_smoke_matrix_windows.bat
+scripts\run_aligned_restir_renderer_windows.bat
+$env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
+scripts\run_interactive_viewer_windows.bat
+```
+
+It writes CSV/JSON metrics and per-asset contact sheets under `outputs/aligned_restir/`. In the interactive viewer, press `4` to inspect the single-frame ReSTIR debug panel. See `docs/phase31_aligned_restir_renderer.md` for the renderer contract and interpretation.
 
 ## Legacy Voxel51 Benchmark
 

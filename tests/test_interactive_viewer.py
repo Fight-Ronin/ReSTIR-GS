@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
 from restir_gs.render.orbit_camera import OrbitCameraState, save_orbit_camera_config
+from restir_gs.render.synthetic_scene import PinholeCamera, SyntheticGaussians
 from scripts.demo_22_interactive_viewer import configure_viewer_runtime_environment, load_viewer_asset
 
 
@@ -68,10 +70,50 @@ def test_cuda_runtime_preflight_warns_without_windows_cl(monkeypatch, capsys) ->
     assert "run_interactive_viewer_windows.bat" in captured.err
 
 
-def _viewer_args(ply: Path, camera_config: Path | None = None) -> Namespace:
+def test_registered_viewer_asset_uses_manifest_loader(monkeypatch, tmp_path: Path) -> None:
+    calls = {}
+    spec = SimpleNamespace(asset_id="dxgl_test", dataset_type="dxgl")
+    resolved = SimpleNamespace(dataset_root=tmp_path / "dataset", splat_path=tmp_path / "test.ply")
+    fake_asset = SimpleNamespace(
+        loaded=SimpleNamespace(
+            scene=_tiny_scene(),
+            stats=SimpleNamespace(original_count=2, loaded_count=2),
+        ),
+        transforms=SimpleNamespace(frames=[SimpleNamespace(index=7, camera=_camera())]),
+    )
+    monkeypatch.setattr("scripts.demo_22_interactive_viewer.load_aligned_asset_manifest", lambda path: SimpleNamespace(repo_root=tmp_path))
+    monkeypatch.setattr("scripts.demo_22_interactive_viewer.get_aligned_asset_spec", lambda manifest, asset_id: spec)
+    monkeypatch.setattr("scripts.demo_22_interactive_viewer.resolve_aligned_asset_paths", lambda item, repo_root: resolved)
+
+    def fake_load_registered(resolved_spec, device="cuda", max_gaussians_override=None):
+        calls["resolved"] = resolved_spec
+        calls["max_gaussians_override"] = max_gaussians_override
+        return fake_asset
+
+    monkeypatch.setattr("scripts.demo_22_interactive_viewer.load_registered_aligned_asset", fake_load_registered)
+    args = _viewer_args(ply=None, asset_id="dxgl_test", manifest=tmp_path / "manifest.json")
+
+    asset = load_viewer_asset(args, device=torch.device("cpu"))
+
+    assert calls["resolved"] is resolved
+    assert calls["max_gaussians_override"] == 0
+    assert asset.label == "Aligned dxgl_test"
+    assert asset.metadata["source_mode"] == "aligned_registry"
+    assert asset.metadata["asset_id"] == "dxgl_test"
+    assert asset.frame_labels == ["7"]
+
+
+def _viewer_args(
+    ply: Path | None,
+    camera_config: Path | None = None,
+    asset_id: str | None = None,
+    manifest: Path | None = None,
+) -> Namespace:
     return Namespace(
         ply=ply,
         camera_config=camera_config,
+        manifest=manifest or Path("unused_manifest.json"),
+        asset_id=asset_id,
         max_gaussians=0,
         width=64,
         height=48,
@@ -80,6 +122,25 @@ def _viewer_args(ply: Path, camera_config: Path | None = None) -> Namespace:
         dataset_root=Path("unused"),
         splat=Path("unused"),
         normalization_bbox_percentile=0.98,
+    )
+
+
+def _camera() -> PinholeCamera:
+    return PinholeCamera(
+        viewmats=torch.eye(4, dtype=torch.float32)[None],
+        intrinsics=torch.eye(3, dtype=torch.float32)[None],
+        width=64,
+        height=48,
+    )
+
+
+def _tiny_scene() -> SyntheticGaussians:
+    return SyntheticGaussians(
+        means=torch.tensor([[0.0, 0.0, 2.0], [0.2, 0.0, 2.1]], dtype=torch.float32),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
+        scales=torch.full((2, 3), 0.05, dtype=torch.float32),
+        opacities=torch.ones((2,), dtype=torch.float32),
+        colors=torch.ones((2, 3), dtype=torch.float32),
     )
 
 

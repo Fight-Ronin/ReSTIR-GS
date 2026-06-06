@@ -1,6 +1,7 @@
 """Evaluation helpers for the ReSTIR-GS prototype."""
 
 from restir_gs.eval.ris_ablation import compute_error_metrics, run_ris_ablation, summarize_rows
+from restir_gs.metrics import compute_rgb_error_metrics
 from restir_gs.eval.proposal_ablation import (
     run_proposal_ablation,
     summarize_rows as summarize_proposal_rows,
@@ -37,6 +38,7 @@ __all__ = [
     "BenchmarkManifest",
     "BenchmarkScene",
     "compute_error_metrics",
+    "compute_rgb_error_metrics",
     "default_spatial_mis_variants",
     "expected_sampling_row_count",
     "frame_alignment_metrics",

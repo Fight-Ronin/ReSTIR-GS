@@ -5,10 +5,12 @@ from restir_gs.render.aligned_asset_registry import (
     AlignedAssetNormalization,
     AlignedAssetSpec,
     ResolvedAlignedAssetSpec,
+    get_aligned_asset_set,
     get_aligned_asset_spec,
     load_aligned_asset_manifest,
     load_registered_aligned_asset,
     resolve_aligned_asset_paths,
+    resolve_requested_asset_ids,
 )
 from restir_gs.render.ply_loader import (
     AssetCameraInfo,
@@ -59,6 +61,7 @@ __all__ = [
     "ResolvedAlignedAssetSpec",
     "SceneNormalization",
     "apply_scene_normalization_to_c2w",
+    "get_aligned_asset_set",
     "get_aligned_asset_spec",
     "infer_scene_normalization_from_plys",
     "load_aligned_asset_manifest",
@@ -77,5 +80,6 @@ __all__ = [
     "orbit_state_pan",
     "orbit_state_to_camera",
     "resolve_aligned_asset_paths",
+    "resolve_requested_asset_ids",
     "save_orbit_camera_config",
 ]

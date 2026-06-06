@@ -14,6 +14,7 @@ from restir_gs.render.aligned_asset_registry import (
     get_aligned_asset_spec,
     load_aligned_asset_manifest,
     resolve_aligned_asset_paths,
+    resolve_requested_asset_ids,
 )
 from scripts.download_dxgl_apple_splat import DxglAppleSplatPlan, download_dxgl_splat, validate_dxgl_splat_file
 
@@ -21,13 +22,26 @@ from scripts.download_dxgl_apple_splat import DxglAppleSplatPlan, download_dxgl_
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download and validate a manifest-registered aligned Gaussian splat.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
-    parser.add_argument("--asset-id", required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--asset-id")
+    selection.add_argument("--asset-set")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     manifest = load_aligned_asset_manifest(args.manifest)
-    spec = get_aligned_asset_spec(manifest, args.asset_id)
-    resolved = resolve_aligned_asset_paths(spec, repo_root=manifest.repo_root)
+    asset_ids = resolve_requested_asset_ids(
+        manifest,
+        asset_ids=[args.asset_id] if args.asset_id is not None else None,
+        asset_set=args.asset_set,
+    )
+    for asset_id in asset_ids:
+        spec = get_aligned_asset_spec(manifest, asset_id)
+        _run_one(spec, manifest.repo_root, args.dry_run)
+    return 0
+
+
+def _run_one(spec, repo_root: Path, dry_run: bool) -> None:
+    resolved = resolve_aligned_asset_paths(spec, repo_root=repo_root)
     size_bytes = resolved.splat_path.stat().st_size if resolved.splat_path.exists() else 0
     summary_path = resolved.splat_path.parent / f"{spec.asset_id}_splat_intake_summary.json"
     plan = DxglAppleSplatPlan(
@@ -38,6 +52,7 @@ def main() -> int:
         size_bytes=size_bytes,
     )
 
+    print()
     print(f"asset_id:    {spec.asset_id}")
     print(f"dataset_type:{spec.dataset_type}")
     print(f"url:         {plan.url}")
@@ -45,9 +60,9 @@ def main() -> int:
     print(f"summary:     {plan.summary_path}")
     print(f"exists:      {plan.exists}")
     print(f"size_bytes:  {plan.size_bytes}")
-    if args.dry_run:
+    if dry_run:
         print("dry-run: no files written")
-        return 0
+        return
 
     download_dxgl_splat(plan)
     validation = validate_dxgl_splat_file(plan.splat_path)
@@ -67,7 +82,6 @@ def main() -> int:
     print(f"gaussians:   {validation['original_count']}")
     print(f"color:       {validation['color_source']}")
     print(f"wrote:       {plan.summary_path}")
-    return 0
 
 
 if __name__ == "__main__":

@@ -21,6 +21,13 @@ if str(ROOT) not in sys.path:
 
 from restir_gs.lighting.asset_lights import make_asset_scaled_point_lights
 from restir_gs.lighting.deferred import LightingBuffers, shade_deferred_blinn_phong, shade_deferred_lambertian
+from restir_gs.render.aligned_asset_registry import (
+    DEFAULT_MANIFEST_PATH,
+    get_aligned_asset_spec,
+    load_aligned_asset_manifest,
+    load_registered_aligned_asset,
+    resolve_aligned_asset_paths,
+)
 from restir_gs.render.camera_probe import load_camera_config
 from restir_gs.render.dxgl_asset import load_dxgl_aligned_asset, scale_camera
 from restir_gs.render.gbuffer import GBuffer, make_pseudo_gbuffer
@@ -37,6 +44,8 @@ from restir_gs.render.orbit_camera import (
 from restir_gs.render.ply_loader import load_gaussian_asset, make_asset_camera
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.render.synthetic_scene import SyntheticGaussians
+from restir_gs.restir.initial import LightingEstimatorBuffers, estimate_proposal_lighting, estimate_ris_initial_lighting
+from restir_gs.restir.proposal import compute_geometric_proposal_distribution, sample_light_candidates_from_distribution
 from scripts.download_dxgl_apple import DEFAULT_EXTRACT_DIR, find_dxgl_dataset_root, validate_dxgl_dataset_root
 from scripts.download_dxgl_apple_splat import DEFAULT_SPLAT_PATH, validate_dxgl_splat_file
 
@@ -58,12 +67,21 @@ class ViewerAsset:
 
 
 @dataclass
+class ViewerRestirResult:
+    reference: LightingBuffers
+    geometric_mc: LightingEstimatorBuffers
+    initial_ris: LightingEstimatorBuffers
+    proposal_confidence: torch.Tensor
+
+
+@dataclass
 class ViewerRenderResult:
     frame_index: int
     state: OrbitCameraState
     gbuffer: GBuffer
     lambertian: LightingBuffers
     blinn_phong: LightingBuffers
+    restir: ViewerRestirResult
     valid_pixels: int
     render_ms: float
     light_info: dict[str, object]
@@ -114,6 +132,9 @@ def render_view(
     state: OrbitCameraState,
     num_lights: int,
     light_seed: int,
+    restir_candidate_count: int,
+    restir_candidate_seed: int,
+    restir_selection_seed: int,
     ambient: float,
     specular_strength: float,
     shininess: float,
@@ -135,6 +156,30 @@ def render_view(
             specular_strength=specular_strength,
             shininess=shininess,
         )
+        proposal = compute_geometric_proposal_distribution(gbuffer, lights)
+        samples = sample_light_candidates_from_distribution(
+            proposal,
+            restir_candidate_count,
+            seed=restir_candidate_seed,
+            device=device,
+        )
+        geometric_mc = estimate_proposal_lighting(
+            gbuffer,
+            lights,
+            samples,
+            ambient=ambient,
+            target_mode="diffuse",
+        )
+        initial_ris, _ = estimate_ris_initial_lighting(
+            gbuffer,
+            lights,
+            samples.light_indices,
+            selection_seed=restir_selection_seed,
+            ambient=ambient,
+            proposal_probs=samples.proposal_probs,
+            target_mode="diffuse",
+        )
+        proposal_confidence = proposal.max(dim=-1).values
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     render_ms = (time.perf_counter() - start) * 1000.0
@@ -145,6 +190,12 @@ def render_view(
         gbuffer=gbuffer,
         lambertian=lambertian,
         blinn_phong=blinn_phong,
+        restir=ViewerRestirResult(
+            reference=lambertian,
+            geometric_mc=geometric_mc,
+            initial_ris=initial_ris,
+            proposal_confidence=proposal_confidence,
+        ),
         valid_pixels=valid_pixels,
         render_ms=render_ms,
         light_info=light_info,
@@ -190,6 +241,7 @@ def save_outputs(
 def panel_images(result: ViewerRenderResult, mode: str) -> list[tuple[str, np.ndarray]]:
     gbuffer = result.gbuffer
     valid = gbuffer.valid_mask & gbuffer.normal_mask
+    restir_error = torch.abs(result.restir.initial_ris.contribution_rgb - result.restir.reference.diffuse_rgb).mean(dim=-1)
     shared = {
         "RGB": to_u8_rgb(gbuffer.rgb),
         "Alpha": (gbuffer.alpha.detach().cpu().clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8),
@@ -199,11 +251,18 @@ def panel_images(result: ViewerRenderResult, mode: str) -> list[tuple[str, np.nd
         "Lambertian": to_u8_rgb(result.lambertian.composite_rgb),
         "Blinn-Phong": to_u8_rgb(result.blinn_phong.composite_rgb),
         "Specular": to_u8_normalized_rgb(result.blinn_phong.specular_rgb, result.blinn_phong.valid_mask),
+        "Reference": to_u8_rgb(result.restir.reference.composite_rgb),
+        "Geometric MC": to_u8_rgb(result.restir.geometric_mc.composite_rgb),
+        "Initial RIS": to_u8_rgb(result.restir.initial_ris.composite_rgb),
+        "Initial Error": to_u8_scalar(restir_error, result.restir.reference.valid_mask),
+        "Proposal Max": to_u8_scalar(result.restir.proposal_confidence, valid),
     }
     if mode == "gbuffer":
         keys = ["RGB", "Alpha", "Depth", "Normal", "Valid", "Blinn-Phong"]
     elif mode == "lighting":
         keys = ["RGB", "Lambertian", "Blinn-Phong", "Specular", "Normal", "Alpha"]
+    elif mode == "restir":
+        keys = ["Reference", "Geometric MC", "Initial RIS", "Initial Error", "Proposal Max", "Alpha"]
     else:
         keys = ["RGB", "Alpha", "Depth", "Normal", "Lambertian", "Blinn-Phong"]
     return [(key, shared[key]) for key in keys]
@@ -229,6 +288,9 @@ class InteractiveViewer:
             self.state,
             num_lights=self.args.num_lights,
             light_seed=self.args.light_seed,
+            restir_candidate_count=self.args.restir_candidate_count,
+            restir_candidate_seed=self.args.restir_candidate_seed,
+            restir_selection_seed=self.args.restir_selection_seed,
             ambient=self.args.ambient,
             specular_strength=self.args.specular_strength,
             shininess=self.args.shininess,
@@ -334,6 +396,10 @@ class InteractiveViewer:
             self.mode = "lighting"
             self.draw()
             return
+        if key == "4":
+            self.mode = "restir"
+            self.draw()
+            return
         if key == "r":
             self.state = reset_state_from_frame(self.asset, self.frame_index, self.args.width, self.args.height, self.device)
             self.rerender_and_draw()
@@ -361,7 +427,33 @@ class InteractiveViewer:
 def load_viewer_asset(args: argparse.Namespace, device: torch.device) -> ViewerAsset:
     if args.ply is not None:
         return load_generic_ply_viewer_asset(args, device=device)
+    if args.asset_id is not None:
+        return load_registered_viewer_asset(args, device=device)
     return load_dxgl_viewer_asset(args, device=device)
+
+
+def load_registered_viewer_asset(args: argparse.Namespace, device: torch.device) -> ViewerAsset:
+    manifest = load_aligned_asset_manifest(args.manifest)
+    spec = get_aligned_asset_spec(manifest, args.asset_id)
+    resolved = resolve_aligned_asset_paths(spec, repo_root=manifest.repo_root)
+    asset = load_registered_aligned_asset(resolved, device=device, max_gaussians_override=args.max_gaussians)
+    return ViewerAsset(
+        label=f"Aligned {spec.asset_id}",
+        scene=asset.loaded.scene,
+        source_path=resolved.splat_path,
+        frame_cameras=[frame.camera for frame in asset.transforms.frames],
+        frame_labels=[str(frame.index) for frame in asset.transforms.frames],
+        metadata={
+            "source_mode": "aligned_registry",
+            "asset_id": spec.asset_id,
+            "dataset_type": spec.dataset_type,
+            "manifest": str(args.manifest),
+            "dataset_root": str(resolved.dataset_root),
+            "splat_path": str(resolved.splat_path),
+            "original_count": asset.loaded.stats.original_count,
+            "loaded_count": asset.loaded.stats.loaded_count,
+        },
+    )
 
 
 def load_dxgl_viewer_asset(args: argparse.Namespace, device: torch.device) -> ViewerAsset:
@@ -466,6 +558,9 @@ def _save_metadata(args: argparse.Namespace, result: ViewerRenderResult, asset: 
         "height": args.height,
         "num_lights": args.num_lights,
         "light_seed": args.light_seed,
+        "restir_candidate_count": args.restir_candidate_count,
+        "restir_candidate_seed": args.restir_candidate_seed,
+        "restir_selection_seed": args.restir_selection_seed,
         "ambient": args.ambient,
         "specular_strength": args.specular_strength,
         "shininess": args.shininess,
@@ -506,6 +601,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Open a lightweight interactive 3DGS viewer.")
     parser.add_argument("--ply", type=Path, default=None, help="Generic compatible 3DGS PLY to view. Omit to use DXGL Apple.")
     parser.add_argument("--camera-config", type=Path, default=None, help="Optional camera config for --ply mode.")
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
+    parser.add_argument("--asset-id", default=None, help="Registered aligned asset id to view. Ignored when --ply is provided.")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_EXTRACT_DIR)
     parser.add_argument("--splat", type=Path, default=DEFAULT_SPLAT_PATH)
     parser.add_argument("--frame-index", type=int, default=None)
@@ -517,6 +614,9 @@ def main() -> int:
     parser.add_argument("--auto-camera-radius-scale", type=float, default=1.8)
     parser.add_argument("--num-lights", type=int, default=128)
     parser.add_argument("--light-seed", type=int, default=2027)
+    parser.add_argument("--restir-candidate-count", type=int, default=8)
+    parser.add_argument("--restir-candidate-seed", type=int, default=34100)
+    parser.add_argument("--restir-selection-seed", type=int, default=35100)
     parser.add_argument("--ambient", type=float, default=0.2)
     parser.add_argument("--specular-strength", type=float, default=0.15)
     parser.add_argument("--shininess", type=float, default=24.0)
@@ -527,6 +627,8 @@ def main() -> int:
 
     if args.width <= 0 or args.height <= 0:
         raise ValueError(f"Expected positive viewer size, got {args.width}x{args.height}")
+    if args.restir_candidate_count <= 0:
+        raise ValueError(f"Expected positive restir_candidate_count, got {args.restir_candidate_count}")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is False.")
     device = torch.device(args.device)
@@ -545,6 +647,9 @@ def main() -> int:
             state,
             num_lights=args.num_lights,
             light_seed=args.light_seed,
+            restir_candidate_count=args.restir_candidate_count,
+            restir_candidate_seed=args.restir_candidate_seed,
+            restir_selection_seed=args.restir_selection_seed,
             ambient=args.ambient,
             specular_strength=args.specular_strength,
             shininess=args.shininess,

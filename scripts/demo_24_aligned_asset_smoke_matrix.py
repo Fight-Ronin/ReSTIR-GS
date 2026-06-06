@@ -26,6 +26,7 @@ from restir_gs.render.aligned_asset_registry import (
     load_aligned_asset_manifest,
     load_registered_aligned_asset,
     resolve_aligned_asset_paths,
+    resolve_requested_asset_ids,
 )
 from restir_gs.render.dxgl_asset import load_dxgl_frame_modalities, scale_camera
 from restir_gs.render.gbuffer import GBuffer, make_pseudo_gbuffer
@@ -132,6 +133,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run a small manifest-driven aligned asset smoke matrix.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     parser.add_argument("--asset-ids", type=parse_asset_ids, default=None)
+    parser.add_argument("--asset-set", default=None)
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--max-gaussians", type=int, default=None)
@@ -147,7 +149,7 @@ def main() -> int:
         raise ValueError(f"Expected positive candidate_count, got {args.candidate_count}")
 
     manifest = load_aligned_asset_manifest(args.manifest)
-    asset_ids = args.asset_ids if args.asset_ids is not None else [asset.asset_id for asset in manifest.assets]
+    asset_ids = resolve_requested_asset_ids(manifest, asset_ids=args.asset_ids, asset_set=args.asset_set)
     device = torch.device(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 

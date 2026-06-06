@@ -1,6 +1,6 @@
 # Current Architecture
 
-This document summarizes the active ReSTIR-GS prototype architecture after Phase 29. The current expansion surface is registry-driven aligned assets, not Apple-specific scripts or non-aligned single-view diagnostics.
+This document summarizes the active ReSTIR-GS prototype architecture after Phase 31. The current expansion surface is registry-driven aligned assets plus the consolidated aligned ReSTIR renderer path, not Apple-specific scripts or non-aligned single-view diagnostics.
 
 ## Active Path
 
@@ -11,7 +11,7 @@ configs/aligned_assets.json
 -> aligned_asset_registry
 -> dataset adapter
 -> load_gaussian_asset
--> smoke matrix / viewer / benchmarks
+-> smoke matrix / aligned ReSTIR renderer / viewer
 ```
 
 In more concrete terms:
@@ -23,10 +23,17 @@ aligned asset manifest
 -> gsplat RGB + expected-depth + alpha render
 -> pseudo G-buffer
 -> all-lights references
--> MC/RIS, temporal, viewer, or smoke scripts
+-> MC/RIS, temporal renderer, viewer, or smoke scripts
 ```
 
-The default manifest currently contains only `dxgl_apple`. Adding a new aligned object should start with a new manifest entry and the generic download/smoke commands. New Apple-style scripts are not the preferred extension path.
+The default manifest now separates asset facts from run selection:
+
+```text
+assets     = registered datasets and splat paths
+asset_sets = smoke/testing groups for commands
+```
+
+The active `testing` set contains `dxgl_apple`, `dxgl_cash_register`, `dxgl_drill`, and `dxgl_fire_extinguisher`. Adding a new aligned object should start with a new manifest entry and, when appropriate, an asset-set update. New object-specific scripts are not the preferred extension path.
 
 ## Data Flow
 
@@ -69,10 +76,12 @@ flowchart LR
 - `proposal.py`: uniform sampling support and the current geometric proposal distribution.
 - `initial.py`: initial MC/RIS estimators. Diffuse remains the default target; Blinn-Phong is opt-in.
 - `temporal.py`: aligned temporal reprojection and carried reservoir combination.
+- `renderer.py`: Phase 31 composition layer for all-lights reference, geometric proposal, initial RIS, and previous-frame temporal reservoir reuse.
 - `spatial_mis.py`: retained defensive spatial MIS support from earlier real-asset diagnostics.
 
 `restir_gs.eval`
 
+- `restir_gs.metrics`: shared RGB error metric helper used by eval and renderer code without introducing eval/restir import cycles.
 - `gbuffer_validation.py`: masked RGB, alpha, depth, and normal-display diagnostics.
 - `dxgl_sampling_benchmark.py`: aligned multi-frame MC/RIS benchmark helper.
 - `proposal_ablation.py`, `real_asset_benchmark.py`, and `spatial_mis_ablation.py`: retained for compatibility and historical diagnostics.
@@ -82,12 +91,16 @@ flowchart LR
 Use the generic aligned asset entrypoints first:
 
 ```powershell
-python scripts/download_aligned_asset.py --asset-id dxgl_apple --dry-run
-python scripts/download_aligned_asset.py --asset-id dxgl_apple
-python scripts/download_aligned_splat.py --asset-id dxgl_apple --dry-run
-python scripts/download_aligned_splat.py --asset-id dxgl_apple
+python scripts/download_aligned_asset.py --asset-set testing --dry-run
+python scripts/download_aligned_splat.py --asset-set testing --dry-run
+python scripts/download_aligned_asset.py --asset-set testing
+python scripts/download_aligned_splat.py --asset-set testing
 scripts\run_aligned_asset_smoke_matrix_windows.bat
+scripts\run_aligned_restir_renderer_windows.bat
+scripts\run_active_validation_windows.bat
 ```
+
+The active Windows runners share `scripts\_setup_windows_cuda_env.bat` for VS x64, conda CUDA paths, torch extension cache, matplotlib cache, and `gsplat` patch checks.
 
 The smoke matrix writes:
 
@@ -95,6 +108,14 @@ The smoke matrix writes:
 outputs/aligned_smoke/aligned_asset_smoke_rows.csv
 outputs/aligned_smoke/aligned_asset_smoke_summary.json
 outputs/aligned_smoke/<asset_id>/contact.png
+```
+
+The aligned ReSTIR renderer writes:
+
+```text
+outputs/aligned_restir/restir_renderer_rows.csv
+outputs/aligned_restir/restir_renderer_summary.json
+outputs/aligned_restir/<asset_id>/contact.png
 ```
 
 Useful aligned validation and debugging commands:
@@ -123,4 +144,4 @@ These scripts remain available, but they are not the active expansion surface:
 1. The active aligned path is technically healthy: manifest loading, dataset adapter, generic Gaussian loader, renderer, G-buffer, lighting, viewer, and smoke rows run end to end.
 2. The generic Gaussian loading boundary is `load_gaussian_asset(...)`; dataset-specific normalization stays in dataset adapters.
 3. World-space light identities are now stable for aligned temporal reuse.
-4. The next dataset expansion should be manifest-first: add an aligned asset entry, download through generic commands, and pass the smoke matrix before adding research logic.
+4. The aligned testing set is now manifest-first: use `asset_sets.testing` for multi-asset smoke and the Phase 31 renderer path before adding research logic.

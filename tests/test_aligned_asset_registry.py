@@ -8,10 +8,12 @@ import pytest
 import torch
 
 from restir_gs.render.aligned_asset_registry import (
+    get_aligned_asset_set,
     get_aligned_asset_spec,
     load_aligned_asset_manifest,
     load_registered_aligned_asset,
     resolve_aligned_asset_paths,
+    resolve_requested_asset_ids,
 )
 from restir_gs.render.ply_loader import GaussianAssetStats, LoadedGaussianAsset
 from restir_gs.render.synthetic_scene import SyntheticGaussians
@@ -23,13 +25,18 @@ from scripts.download_aligned_splat import main as download_splat_main
 
 def test_default_manifest_contains_dxgl_apple() -> None:
     manifest = load_aligned_asset_manifest("configs/aligned_assets.json")
-    spec = get_aligned_asset_spec(manifest, "dxgl_apple")
+    asset_ids = [asset.asset_id for asset in manifest.assets]
 
     assert manifest.version == 1
-    assert spec.dataset_type == "dxgl"
-    assert spec.gaussian_schema == "auto"
-    assert spec.default_frames == [0, 49, 98, 147]
-    assert spec.temporal_window == [45, 46, 47, 48, 49, 50, 51, 52, 53]
+    assert asset_ids == ["dxgl_apple", "dxgl_cash_register", "dxgl_drill", "dxgl_fire_extinguisher"]
+    assert get_aligned_asset_set(manifest, "smoke") == ["dxgl_apple"]
+    assert get_aligned_asset_set(manifest, "testing") == asset_ids
+    for asset_id in asset_ids:
+        spec = get_aligned_asset_spec(manifest, asset_id)
+        assert spec.dataset_type == "dxgl"
+        assert spec.gaussian_schema == "auto"
+        assert spec.default_frames == [0, 49, 98, 147]
+        assert spec.temporal_window == [45, 46, 47, 48, 49, 50, 51, 52, 53]
 
 
 def test_manifest_missing_required_fields_fails_loudly(tmp_path: Path) -> None:
@@ -67,6 +74,49 @@ def test_manifest_unsupported_dataset_type_fails_loudly(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unsupported aligned dataset_type"):
         load_aligned_asset_manifest(path)
+
+
+def test_manifest_asset_set_validation_fails_loudly(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+
+    path.write_text(json.dumps({"version": 1, "assets": [_asset_payload()], "asset_sets": {"empty": []}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="non-empty list"):
+        load_aligned_asset_manifest(path)
+
+    path.write_text(json.dumps({"version": 1, "assets": [_asset_payload()], "asset_sets": {"bad": ["missing"]}}), encoding="utf-8")
+    with pytest.raises(KeyError, match="Unknown asset ids"):
+        load_aligned_asset_manifest(path)
+
+    path.write_text(json.dumps({"version": 1, "assets": [_asset_payload()], "asset_sets": {"dupe": ["fixture", "fixture"]}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Duplicate asset ids"):
+        load_aligned_asset_manifest(path)
+
+
+def test_resolve_requested_asset_ids_precedence_and_defaults(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    second = _asset_payload()
+    second["asset_id"] = "second"
+    second["dataset_root"] = "outputs/second"
+    second["splat_path"] = "outputs/second_splat/second.ply"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "asset_sets": {"smoke": ["fixture"], "testing": ["fixture", "second"]},
+                "assets": [_asset_payload(), second],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = load_aligned_asset_manifest(manifest_path)
+
+    assert resolve_requested_asset_ids(manifest) == ["fixture", "second"]
+    assert resolve_requested_asset_ids(manifest, asset_set="smoke") == ["fixture"]
+    assert resolve_requested_asset_ids(manifest, asset_ids=["second"], asset_set="smoke") == ["second"]
+    with pytest.raises(KeyError, match="Unknown aligned asset_set"):
+        resolve_requested_asset_ids(manifest, asset_set="missing")
+    with pytest.raises(ValueError, match="Duplicate asset ids"):
+        resolve_requested_asset_ids(manifest, asset_ids=["fixture", "fixture"])
 
 
 def test_path_resolution_uses_manifest_repo_root(tmp_path: Path) -> None:
@@ -147,6 +197,35 @@ def test_generic_download_dry_runs_write_no_files(tmp_path: Path, monkeypatch, c
     assert not (tmp_path / "outputs").exists()
 
 
+def test_generic_download_asset_set_dry_runs_write_no_files(tmp_path: Path, monkeypatch, capsys) -> None:
+    second = _asset_payload()
+    second["asset_id"] = "second"
+    second["dataset_url"] = "https://example.com/second.zip"
+    second["dataset_root"] = "outputs/second"
+    second["splat_url"] = "https://example.com/second.ply"
+    second["splat_path"] = "outputs/second_splat/second.ply"
+    manifest_path = tmp_path / "configs" / "aligned_assets.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        json.dumps({"version": 1, "asset_sets": {"testing": ["fixture", "second"]}, "assets": [_asset_payload(), second]}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(sys, "argv", ["download_aligned_asset.py", "--manifest", str(manifest_path), "--asset-set", "testing", "--dry-run"])
+    assert download_asset_main() == 0
+    asset_out = capsys.readouterr().out
+    assert "https://example.com/data.zip" in asset_out
+    assert "https://example.com/second.zip" in asset_out
+
+    monkeypatch.setattr(sys, "argv", ["download_aligned_splat.py", "--manifest", str(manifest_path), "--asset-set", "testing", "--dry-run"])
+    assert download_splat_main() == 0
+    splat_out = capsys.readouterr().out
+    assert "https://example.com/fixture.ply" in splat_out
+    assert "https://example.com/second.ply" in splat_out
+    assert not (tmp_path / "outputs").exists()
+
+
 def test_smoke_row_normalizer_records_required_fields() -> None:
     row = make_smoke_row(
         "fixture",
@@ -183,13 +262,40 @@ def test_smoke_matrix_windows_runner_documents_env_command_surface() -> None:
     runner = Path("scripts/run_aligned_asset_smoke_matrix_windows.bat")
     text = runner.read_text(encoding="utf-8")
 
+    assert "scripts\\_setup_windows_cuda_env.bat" in text
     assert "RESTIRGS_ALIGNED_MANIFEST" in text
+    assert "RESTIRGS_ALIGNED_ASSET_SET" in text
     assert "RESTIRGS_ALIGNED_ASSET_IDS" in text
     assert "RESTIRGS_ALIGNED_SMOKE_EXTRA_ARGS" in text
     assert "scripts\\demo_24_aligned_asset_smoke_matrix.py" in text
     assert "--manifest" in text
+    assert "--asset-set" in text
     assert "--asset-ids" in text
     assert "--device cuda" in text
+
+
+def test_active_validation_runner_chains_current_active_runners() -> None:
+    runner = Path("scripts/run_active_validation_windows.bat")
+    text = runner.read_text(encoding="utf-8")
+
+    assert "scripts\\_setup_windows_cuda_env.bat" in text
+    assert "RESTIRGS_ALIGNED_MANIFEST" in text
+    assert "RESTIRGS_ALIGNED_ASSET_SET" in text
+    assert "RESTIRGS_ALIGNED_ASSET_IDS" in text
+    assert "RESTIRGS_ALIGNED_SMOKE_EXTRA_ARGS" in text
+    assert "RESTIRGS_RESTIR_EXTRA_ARGS" in text
+    assert "scripts\\demo_24_aligned_asset_smoke_matrix.py" in text
+    assert "scripts\\demo_26_aligned_restir_renderer.py" in text
+
+
+def test_active_windows_runners_share_cuda_preflight() -> None:
+    for path in (
+        Path("scripts/run_active_validation_windows.bat"),
+        Path("scripts/run_aligned_asset_smoke_matrix_windows.bat"),
+        Path("scripts/run_aligned_restir_renderer_windows.bat"),
+        Path("scripts/run_interactive_viewer_windows.bat"),
+    ):
+        assert "scripts\\_setup_windows_cuda_env.bat" in path.read_text(encoding="utf-8")
 
 
 def _asset_payload() -> dict[str, object]:

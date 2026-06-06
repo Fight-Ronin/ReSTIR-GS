@@ -48,6 +48,7 @@ class AlignedAssetManifest:
     path: Path
     repo_root: Path
     version: int
+    asset_sets: dict[str, list[str]]
     assets: list[AlignedAssetSpec]
 
 
@@ -62,10 +63,12 @@ def load_aligned_asset_manifest(path: str | Path = DEFAULT_MANIFEST_PATH) -> Ali
     asset_ids = [asset.asset_id for asset in assets]
     if len(asset_ids) != len(set(asset_ids)):
         raise ValueError(f"Aligned asset manifest has duplicate asset_id values: {asset_ids}")
+    asset_sets = _parse_asset_sets(data.get("asset_sets", {}), asset_ids, manifest_path)
     return AlignedAssetManifest(
         path=manifest_path,
         repo_root=repo_root,
         version=int(data.get("version", 1)),
+        asset_sets=asset_sets,
         assets=assets,
     )
 
@@ -76,6 +79,30 @@ def get_aligned_asset_spec(manifest: AlignedAssetManifest, asset_id: str) -> Ali
             return spec
     known = ", ".join(spec.asset_id for spec in manifest.assets)
     raise KeyError(f"Unknown aligned asset_id '{asset_id}'. Known assets: {known}")
+
+
+def get_aligned_asset_set(manifest: AlignedAssetManifest, set_name: str) -> list[str]:
+    if set_name not in manifest.asset_sets:
+        known = ", ".join(sorted(manifest.asset_sets))
+        raise KeyError(f"Unknown aligned asset_set '{set_name}'. Known sets: {known}")
+    return list(manifest.asset_sets[set_name])
+
+
+def resolve_requested_asset_ids(
+    manifest: AlignedAssetManifest,
+    asset_ids: list[str] | None = None,
+    asset_set: str | None = None,
+) -> list[str]:
+    if asset_ids is not None:
+        resolved = list(asset_ids)
+    elif asset_set is not None:
+        resolved = get_aligned_asset_set(manifest, asset_set)
+    elif "testing" in manifest.asset_sets:
+        resolved = get_aligned_asset_set(manifest, "testing")
+    else:
+        resolved = [asset.asset_id for asset in manifest.assets]
+    _validate_asset_id_list(resolved, [asset.asset_id for asset in manifest.assets], "requested asset ids")
+    return resolved
 
 
 def resolve_aligned_asset_paths(
@@ -144,6 +171,38 @@ def _parse_asset_spec(item: Any, manifest_path: Path) -> AlignedAssetSpec:
     if not 0.0 < spec.normalization.bbox_percentile <= 1.0:
         raise ValueError(f"Expected bbox_percentile in (0,1] for asset {spec.asset_id}")
     return spec
+
+
+def _parse_asset_sets(asset_sets_data: Any, asset_ids: list[str], manifest_path: Path) -> dict[str, list[str]]:
+    if asset_sets_data in (None, {}):
+        return {}
+    if not isinstance(asset_sets_data, dict):
+        raise ValueError(f"Aligned asset manifest asset_sets must be an object: {manifest_path}")
+    parsed: dict[str, list[str]] = {}
+    for set_name, values in asset_sets_data.items():
+        if not isinstance(set_name, str) or not set_name:
+            raise ValueError(f"Aligned asset manifest has an invalid asset_set name in {manifest_path}")
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"Aligned asset_set '{set_name}' must be a non-empty list in {manifest_path}")
+        set_asset_ids: list[str] = []
+        for value in values:
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Aligned asset_set '{set_name}' contains an invalid asset id in {manifest_path}")
+            set_asset_ids.append(value)
+        _validate_asset_id_list(set_asset_ids, asset_ids, f"asset_set '{set_name}'")
+        parsed[set_name] = set_asset_ids
+    return parsed
+
+
+def _validate_asset_id_list(asset_ids: list[str], known_asset_ids: list[str], context: str) -> None:
+    if not asset_ids:
+        raise ValueError(f"Expected at least one asset id for {context}")
+    if len(asset_ids) != len(set(asset_ids)):
+        raise ValueError(f"Duplicate asset ids in {context}: {asset_ids}")
+    unknown = [asset_id for asset_id in asset_ids if asset_id not in known_asset_ids]
+    if unknown:
+        known = ", ".join(known_asset_ids)
+        raise KeyError(f"Unknown asset ids in {context}: {unknown}. Known assets: {known}")
 
 
 def _required_str(item: dict[str, Any], key: str, manifest_path: Path) -> str:
