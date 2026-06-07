@@ -28,14 +28,10 @@ if errorlevel 1 (
 )
 
 echo [2/2] Running aligned ReSTIR renderer path...
-if defined RESTIRGS_ALIGNED_ASSET_IDS goto restir_asset_ids
-"%RESTIRGS_ENV%\python.exe" scripts\demo_26_aligned_restir_renderer.py --manifest "%RESTIRGS_ALIGNED_MANIFEST%" --asset-set "%RESTIRGS_ALIGNED_ASSET_SET%" --device cuda %RESTIRGS_RESTIR_EXTRA_ARGS%
+set "RESTIRGS_SKIP_WINDOWS_PREFLIGHT=1"
+call scripts\run_aligned_restir_renderer_windows.bat
 set "STATUS=%ERRORLEVEL%"
 goto done
-
-:restir_asset_ids
-"%RESTIRGS_ENV%\python.exe" scripts\demo_26_aligned_restir_renderer.py --manifest "%RESTIRGS_ALIGNED_MANIFEST%" --asset-ids "%RESTIRGS_ALIGNED_ASSET_IDS%" --device cuda %RESTIRGS_RESTIR_EXTRA_ARGS%
-set "STATUS=%ERRORLEVEL%"
 
 :done
 popd

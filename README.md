@@ -1,8 +1,8 @@
 # ReSTIR-GS
 
-Windows-native ReSTIR-GS prototype. The current active path is manifest-driven aligned 3DGS assets, pseudo G-buffers, scene-stable world lights, initial RIS, and previous-frame temporal reservoir reuse.
+Windows-native ReSTIR-GS prototype. The current active path is manifest-driven aligned 3DGS assets, pseudo G-buffers, visibility-aware direct lighting, scene-stable world lights, initial RIS, and previous-frame temporal reservoir reuse with conservative depth/normal/RGB/motion compatibility gates.
 
-For the concise current workflow, see `docs/active_workflow.md`. For the module map and historical boundaries, see `docs/current_architecture.md`.
+For the concise current workflow, see `docs/active_workflow.md`. For the module map and historical boundaries, see `docs/current_architecture.md`. For the current stability/readout snapshot, see `docs/current_milestone_snapshot.md`.
 
 ## Environment
 
@@ -48,7 +48,15 @@ outputs/aligned_restir/
 outputs/interactive_viewer/
 ```
 
-Older synthetic, Voxel51, single-view PLY, and broad ablation sections below are retained for reproduction and context; they are not the preferred expansion surface for new aligned work.
+Optional visibility outputs:
+
+```text
+outputs/aligned_visibility/
+outputs/aligned_visibility_ris/
+outputs/aligned_visibility_matrix/
+```
+
+Older synthetic, Voxel51, single-view PLY, and broad ablation sections below are retained for reproduction and context; they are not the preferred expansion surface for new aligned work. See `docs/legacy_inventory.md` for the retained historical surface.
 
 ## Windows gsplat Patch
 
@@ -348,6 +356,8 @@ The runner calls the Visual Studio x64 setup needed by `gsplat` CUDA JIT. Direct
 
 Use it to orbit/pan/dolly the active splat, inspect RGB/G-buffer/lighting panels, and save a replayable camera config under `outputs/interactive_viewer/`. See `docs/phase25_interactive_viewer.md` for controls, generic PLY mode, and saved-output details.
 
+Press `5` in the viewer to inspect the optional visibility target panel.
+
 ## DXGL Aligned Temporal Reuse Smoke
 
 Run the aligned consecutive-frame temporal reprojection and reservoir reuse smoke with scene-stable world-space lights:
@@ -371,7 +381,51 @@ $env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
 scripts\run_interactive_viewer_windows.bat
 ```
 
-It writes CSV/JSON metrics and per-asset contact sheets under `outputs/aligned_restir/`. In the interactive viewer, press `4` to inspect the single-frame ReSTIR debug panel. See `docs/phase31_aligned_restir_renderer.md` for the renderer contract and interpretation.
+It writes CSV/JSON metrics and per-asset contact sheets under `outputs/aligned_restir/`. The preferred active renderer target is now visibility-aware direct lighting, so the summary should record `target_mode="visibility"` and `proposal="visibility_geometric"`. In the interactive viewer, press `4` to inspect the single-frame ReSTIR debug panel and `5` for visibility target inspection. See `docs/phase37_visibility_active_renderer.md` for the active policy and `docs/phase32_temporal_compatibility_gate.md` for the temporal history gate.
+
+To run the retained diffuse compatibility baseline:
+
+```powershell
+$env:RESTIRGS_RESTIR_TARGET_MODE="diffuse"
+$env:RESTIRGS_RESTIR_NUM_LIGHTS="128"
+$env:RESTIRGS_RESTIR_WIDTH="256"
+$env:RESTIRGS_RESTIR_HEIGHT="256"
+$env:RESTIRGS_RESTIR_FRAME_INDICES="manifest"
+$env:RESTIRGS_RESTIR_OUTPUT_DIR="outputs\aligned_restir_diffuse"
+scripts\run_aligned_restir_renderer_windows.bat
+```
+
+## Visibility-Aware Lighting Smoke
+
+Run the optional shadow-proxy direct-lighting smoke:
+
+```powershell
+scripts\run_aligned_visibility_smoke_windows.bat
+```
+
+It writes shadowed/unshadowed debug images and a summary under `outputs/aligned_visibility/`. See `docs/phase33_visibility_smoke.md` for the visibility equation, outputs, and limitations.
+
+Run the optional visibility-aware initial RIS smoke:
+
+```powershell
+scripts\run_aligned_visibility_ris_smoke_windows.bat
+```
+
+It writes MC/RIS comparison rows and debug images under `outputs/aligned_visibility_ris/`. See `docs/phase34_visibility_ris_smoke.md` for the estimator equation and interpretation.
+
+Run the optional multi-asset visibility target matrix:
+
+```powershell
+scripts\run_aligned_visibility_smoke_matrix_windows.bat
+```
+
+Run the optional visibility validation bundle, which includes the matrix plus a short visibility-target renderer pass:
+
+```powershell
+scripts\run_visibility_validation_windows.bat
+```
+
+See `docs/phase35_visibility_target_renderer.md` for the matrix history, `docs/phase36_visibility_aware_proposal.md` for the proposal refinement, and `docs/phase37_visibility_active_renderer.md` for the current active renderer policy.
 
 ## Legacy Voxel51 Benchmark
 

@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from restir_gs.lighting.asset_lights import make_asset_scaled_world_lights
+from restir_gs.lighting.visibility import make_shadow_map_bundle
 from restir_gs.render.aligned_asset_registry import (
     DEFAULT_MANIFEST_PATH,
     get_aligned_asset_spec,
@@ -53,6 +54,15 @@ def parse_int_list(text: str) -> list[int]:
     if any(value < 0 for value in values):
         raise argparse.ArgumentTypeError(f"Expected non-negative frame indices, got {values}")
     return values
+
+
+def parse_optional_float(text: str) -> float | None:
+    if text.strip().lower() == "none":
+        return None
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Expected a float or 'none', got {text!r}") from exc
 
 
 def to_u8_rgb(rgb: torch.Tensor) -> np.ndarray:
@@ -160,6 +170,7 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--max-gaussians", type=int, default=None)
     parser.add_argument("--num-lights", type=int, default=128)
+    parser.add_argument("--target-mode", choices=("diffuse", "visibility"), default="diffuse")
     parser.add_argument("--light-seed", type=int, default=2027)
     parser.add_argument("--light-bbox-percentile", type=float, default=0.98)
     parser.add_argument("--light-radius-scale", type=float, default=1.25)
@@ -168,6 +179,12 @@ def main() -> int:
     parser.add_argument("--initial-selection-seed-base", type=int, default=32100)
     parser.add_argument("--temporal-selection-seed-base", type=int, default=33100)
     parser.add_argument("--depth-tolerance", type=float, default=0.05)
+    parser.add_argument("--temporal-normal-threshold", type=parse_optional_float, default=0.85)
+    parser.add_argument("--temporal-rgb-threshold", type=parse_optional_float, default=0.20)
+    parser.add_argument("--temporal-max-motion-pixels", type=parse_optional_float, default=32.0)
+    parser.add_argument("--visibility-shadow-resolution", type=int, default=128)
+    parser.add_argument("--visibility-shadow-bias-scale", type=float, default=0.02)
+    parser.add_argument("--visibility-shadow-alpha-threshold", type=float, default=1e-4)
     parser.add_argument("--ambient", type=float, default=0.2)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--device", default="cuda")
@@ -182,12 +199,19 @@ def main() -> int:
     asset_ids = resolve_requested_asset_ids(manifest, asset_ids=args.asset_ids, asset_set=args.asset_set)
     device = torch.device(args.device)
     settings = RestirRenderSettings(
+        target_mode=args.target_mode,
         candidate_count=args.candidate_count,
         candidate_seed_base=args.candidate_seed_base,
         initial_selection_seed_base=args.initial_selection_seed_base,
         temporal_selection_seed_base=args.temporal_selection_seed_base,
         depth_tolerance=args.depth_tolerance,
+        temporal_normal_threshold=args.temporal_normal_threshold,
+        temporal_rgb_threshold=args.temporal_rgb_threshold,
+        temporal_max_motion_pixels=args.temporal_max_motion_pixels,
         ambient=args.ambient,
+        visibility_shadow_resolution=args.visibility_shadow_resolution,
+        visibility_shadow_bias_scale=args.visibility_shadow_bias_scale,
+        visibility_shadow_alpha_threshold=args.visibility_shadow_alpha_threshold,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -208,6 +232,18 @@ def main() -> int:
             radius_scale=args.light_radius_scale,
             device=device,
         )
+        shadow_bundle = None
+        if args.target_mode == "visibility":
+            target_world = torch.tensor(light_info["center"], dtype=torch.float32, device=device)
+            shadow_bundle = make_shadow_map_bundle(
+                asset.loaded.scene,
+                world_lights.positions_world,
+                torch.arange(args.num_lights, dtype=torch.long, device=device),
+                target_world,
+                scene_radius=float(light_info["radius"]),
+                resolution=args.visibility_shadow_resolution,
+                shadow_bias_scale=args.visibility_shadow_bias_scale,
+            )
 
         asset_output_dir = args.output_dir / asset_id
         previous: RestirHistory | None = None
@@ -225,6 +261,7 @@ def main() -> int:
                 frame_index=frame_index,
                 settings=settings,
                 previous_history=previous,
+                shadow_bundle=shadow_bundle,
             )
             frame_rows = make_restir_metric_rows(asset_id, result, settings)
             rows.extend(frame_rows)
@@ -243,6 +280,7 @@ def main() -> int:
                 {
                     "frame_index": frame_index,
                     "valid_pixels": int(result.reference.valid_mask.sum().detach().cpu()),
+                    "pre_gate_pixels": int(result.lookup.pre_gate_mask.sum().detach().cpu()),
                     "reuse_pixels": int(result.lookup.valid_mask.sum().detach().cpu()),
                     "reuse_fraction": reuse_fraction,
                     "initial_contribution_mae": contribution_rows["initial_ris"]["mae"],
@@ -318,9 +356,15 @@ def main() -> int:
             "initial_selection_seed_base": args.initial_selection_seed_base,
             "temporal_selection_seed_base": args.temporal_selection_seed_base,
             "depth_tolerance": args.depth_tolerance,
+            "temporal_normal_threshold": args.temporal_normal_threshold,
+            "temporal_rgb_threshold": args.temporal_rgb_threshold,
+            "temporal_max_motion_pixels": args.temporal_max_motion_pixels,
             "ambient": args.ambient,
-            "target_mode": "diffuse",
-            "proposal": "geometric",
+            "target_mode": args.target_mode,
+            "proposal": "visibility_geometric" if args.target_mode == "visibility" else "geometric",
+            "visibility_shadow_resolution": args.visibility_shadow_resolution,
+            "visibility_shadow_bias_scale": args.visibility_shadow_bias_scale,
+            "visibility_shadow_alpha_threshold": args.visibility_shadow_alpha_threshold,
         },
         "row_count": len(rows),
         "all_numeric_finite": all_numeric_finite(rows),

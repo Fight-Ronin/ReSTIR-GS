@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from restir_gs.lighting.deferred import PointLights
+from restir_gs.lighting.visibility import ShadowMapBundle
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.restir.renderer import (
@@ -43,6 +44,26 @@ def test_valid_history_accumulates_m_and_keeps_finite_weights() -> None:
     assert torch.isfinite(second.temporal.contribution_rgb).all()
 
 
+def test_failing_temporal_gate_falls_back_to_initial() -> None:
+    settings = RestirRenderSettings(
+        candidate_count=2,
+        candidate_seed_base=10,
+        initial_selection_seed_base=20,
+        temporal_selection_seed_base=30,
+        temporal_rgb_threshold=0.1,
+    )
+    camera = make_camera()
+    lights = make_lights()
+    first = evaluate_restir_frame_from_gbuffer(make_gbuffer(rgb=0.0), camera, lights, frame_index=0, settings=settings)
+
+    second = evaluate_restir_frame_from_gbuffer(make_gbuffer(rgb=0.6), camera, lights, frame_index=1, settings=settings, previous_history=first.history)
+
+    assert bool(second.lookup.pre_gate_mask.any())
+    assert not bool(second.lookup.valid_mask.any())
+    assert torch.equal(second.temporal.contribution_rgb, second.initial.contribution_rgb)
+    assert torch.equal(second.temporal.composite_rgb, second.initial.composite_rgb)
+
+
 def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
     settings = RestirRenderSettings(candidate_count=1)
     result = evaluate_restir_frame_from_gbuffer(make_gbuffer(), make_camera(), make_lights(), frame_index=3, settings=settings)
@@ -62,10 +83,17 @@ def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
             "candidate_seed",
             "selection_seed",
             "valid_pixels",
+            "pre_gate_pixels",
+            "pre_gate_fraction",
             "reuse_pixels",
             "reuse_fraction",
             "mean_relative_depth_error",
+            "mean_temporal_normal_dot",
+            "mean_temporal_rgb_distance",
             "mean_motion_pixels",
+            "temporal_normal_threshold",
+            "temporal_rgb_threshold",
+            "temporal_max_motion_pixels",
             "reservoir_m_mean",
             "reservoir_m_max",
             "mae",
@@ -88,6 +116,57 @@ def test_renderer_rejects_frames_without_valid_lighting_pixels() -> None:
         evaluate_restir_frame_from_gbuffer(gbuffer, make_camera(), make_lights(), frame_index=0)
 
 
+def test_visibility_target_requires_shadow_bundle() -> None:
+    settings = RestirRenderSettings(target_mode="visibility", candidate_count=1)
+
+    with pytest.raises(ValueError, match="ShadowMapBundle"):
+        evaluate_restir_frame_from_gbuffer(make_gbuffer(), make_camera(), make_lights(), frame_index=0, settings=settings)
+
+
+def test_visibility_target_renderer_rows_are_finite() -> None:
+    settings = RestirRenderSettings(target_mode="visibility", candidate_count=1)
+    result = evaluate_restir_frame_from_gbuffer(
+        make_gbuffer(),
+        make_camera(),
+        make_lights(),
+        frame_index=2,
+        settings=settings,
+        shadow_bundle=make_shadow_bundle(),
+    )
+
+    rows = make_restir_metric_rows("tiny_asset", result, settings)
+
+    assert torch.equal(result.temporal.contribution_rgb, result.initial.contribution_rgb)
+    assert {str(row["target_mode"]) for row in rows} == {"visibility"}
+    assert all_numeric_finite(rows)
+
+
+def test_visibility_target_uses_visibility_geometric_proposal_by_default() -> None:
+    settings = RestirRenderSettings(target_mode="visibility", candidate_count=1)
+    result = evaluate_restir_frame_from_gbuffer(
+        make_gbuffer(),
+        make_camera(),
+        make_lights(),
+        frame_index=2,
+        settings=settings,
+        shadow_bundle=make_shadow_bundle(),
+    )
+
+    rows = make_restir_metric_rows("tiny_asset", result, settings)
+
+    assert {str(row["proposal"]) for row in rows} == {"visibility_geometric"}
+    assert all_numeric_finite(rows)
+
+
+def test_diffuse_target_keeps_geometric_proposal() -> None:
+    settings = RestirRenderSettings(target_mode="diffuse", candidate_count=1)
+    result = evaluate_restir_frame_from_gbuffer(make_gbuffer(), make_camera(), make_lights(), frame_index=0, settings=settings)
+
+    rows = make_restir_metric_rows("tiny_asset", result, settings)
+
+    assert {str(row["proposal"]) for row in rows} == {"geometric"}
+
+
 def make_camera() -> PinholeCamera:
     return PinholeCamera(
         viewmats=torch.eye(4, dtype=torch.float32)[None],
@@ -97,7 +176,7 @@ def make_camera() -> PinholeCamera:
     )
 
 
-def make_gbuffer(valid: bool = True) -> GBuffer:
+def make_gbuffer(valid: bool = True, rgb: float = 0.6) -> GBuffer:
     ys, xs = torch.meshgrid(torch.arange(2, dtype=torch.float32), torch.arange(2, dtype=torch.float32), indexing="ij")
     depth = torch.full((2, 2), 2.0, dtype=torch.float32)
     position = torch.stack((xs * depth, ys * depth, depth), dim=-1)
@@ -105,7 +184,7 @@ def make_gbuffer(valid: bool = True) -> GBuffer:
     normal[..., 2] = 1.0
     mask = torch.full((2, 2), valid, dtype=torch.bool)
     return GBuffer(
-        rgb=torch.full((2, 2, 3), 0.6, dtype=torch.float32),
+        rgb=torch.full((2, 2, 3), rgb, dtype=torch.float32),
         depth=depth,
         alpha=torch.ones((2, 2), dtype=torch.float32),
         position_cam=position,
@@ -120,4 +199,21 @@ def make_lights() -> PointLights:
         positions_cam=torch.tensor([[0.0, 0.0, 3.0], [2.0, 2.0, 4.0]], dtype=torch.float32),
         colors=torch.ones((2, 3), dtype=torch.float32),
         intensities=torch.ones((2,), dtype=torch.float32),
+    )
+
+
+def make_shadow_bundle() -> ShadowMapBundle:
+    camera = PinholeCamera(
+        viewmats=torch.eye(4, dtype=torch.float32)[None],
+        intrinsics=torch.tensor([[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]], dtype=torch.float32),
+        width=4,
+        height=4,
+    )
+    return ShadowMapBundle(
+        light_indices=torch.tensor([0, 1], dtype=torch.long),
+        light_cameras=[camera, camera],
+        depth_maps=torch.full((2, 4, 4), 10.0, dtype=torch.float32),
+        alpha_maps=torch.zeros((2, 4, 4), dtype=torch.float32),
+        scene_radius=1.0,
+        depth_bias=0.0,
     )

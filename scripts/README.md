@@ -16,6 +16,15 @@ run_aligned_restir_renderer_windows.bat
 run_interactive_viewer_windows.bat
 ```
 
+Optional visibility diagnostics:
+
+```text
+demo_27_aligned_visibility_smoke.py
+demo_28_aligned_visibility_ris_smoke.py
+demo_29_aligned_visibility_smoke_matrix.py
+run_visibility_validation_windows.bat
+```
+
 ## Active Workflow
 
 ```powershell
@@ -25,6 +34,8 @@ python scripts/download_aligned_asset.py --asset-set testing
 python scripts/download_aligned_splat.py --asset-set testing
 scripts\run_active_validation_windows.bat
 ```
+
+`run_aligned_restir_renderer_windows.bat` defaults to the visibility-aware active renderer target. Set `RESTIRGS_RESTIR_TARGET_MODE=diffuse` for the retained diffuse compatibility baseline.
 
 For interactive inspection:
 
@@ -44,4 +55,4 @@ patch_gsplat_windows.py
 
 ## Historical / Compatibility Scripts
 
-The remaining `demo_*`, `download_voxel51_*`, Apple-specific DXGL intake, single-view PLY, Voxel51, and older ablation runners are retained for reproducing earlier phases. They are not the preferred surface for new aligned ReSTIR work.
+The remaining `demo_*`, `download_voxel51_*`, Apple-specific DXGL intake, single-view PLY, Voxel51, and older ablation runners are retained for reproducing earlier phases. They are not the preferred surface for new aligned ReSTIR work. See `docs/legacy_inventory.md` for the retained historical surface.

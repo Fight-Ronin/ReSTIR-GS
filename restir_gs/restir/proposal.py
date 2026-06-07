@@ -5,7 +5,9 @@ from dataclasses import dataclass
 import torch
 
 from restir_gs.lighting.deferred import PointLights
+from restir_gs.lighting.visibility import ShadowMapBundle, evaluate_shadow_visibility
 from restir_gs.render.gbuffer import GBuffer
+from restir_gs.render.synthetic_scene import PinholeCamera
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,52 @@ def compute_geometric_proposal_distribution(
     normalized = weights / weight_sum.clamp_min(torch.finfo(dtype).tiny)
     use_uniform = weight_sum <= 0.0
     return torch.where(use_uniform, uniform, normalized)
+
+
+def compute_visibility_geometric_proposal_distribution(
+    gbuffer: GBuffer,
+    camera: PinholeCamera,
+    lights: PointLights,
+    shadow_bundle: ShadowMapBundle,
+    alpha_threshold: float = 1e-4,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> torch.Tensor:
+    """Compute geometric proposal probabilities modulated by binary shadow visibility.
+
+    If no visible light has positive geometric mass for a pixel, the function falls
+    back to the base geometric proposal so sampling remains well-defined.
+    """
+    if alpha_threshold < 0.0:
+        raise ValueError(f"Expected non-negative alpha_threshold, got {alpha_threshold}")
+    light_count = lights.positions_cam.shape[0]
+    expected = torch.arange(light_count, dtype=torch.long, device=shadow_bundle.light_indices.device)
+    if shadow_bundle.light_indices.shape != (light_count,) or not torch.equal(
+        shadow_bundle.light_indices.to(dtype=torch.long),
+        expected,
+    ):
+        raise ValueError("Visibility-geometric proposal requires one shadow map for every light in index order.")
+
+    base = compute_geometric_proposal_distribution(
+        gbuffer,
+        lights,
+        two_sided=two_sided,
+        distance_epsilon=distance_epsilon,
+    )
+    height, width = gbuffer.depth.shape
+    all_indices = torch.arange(light_count, dtype=torch.long, device=gbuffer.rgb.device)
+    all_indices = all_indices.expand(height, width, light_count)
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow_bundle,
+        all_indices,
+        alpha_threshold=alpha_threshold,
+    ).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
+    weights = base * visibility
+    weight_sum = weights.sum(dim=-1, keepdim=True)
+    normalized = weights / weight_sum.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)
+    return torch.where(weight_sum > 0.0, normalized, base)
 
 
 def sample_light_candidates_from_distribution(

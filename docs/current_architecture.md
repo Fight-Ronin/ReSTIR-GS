@@ -1,6 +1,6 @@
 # Current Architecture
 
-This document summarizes the active ReSTIR-GS prototype architecture after Phase 31. The current expansion surface is registry-driven aligned assets plus the consolidated aligned ReSTIR renderer path, not Apple-specific scripts or non-aligned single-view diagnostics.
+This document summarizes the active ReSTIR-GS prototype architecture after Phase 37. The current expansion surface is registry-driven aligned assets plus the consolidated visibility-aware aligned ReSTIR renderer path, not Apple-specific scripts or non-aligned single-view diagnostics.
 
 ## Active Path
 
@@ -22,8 +22,8 @@ aligned asset manifest
 -> dataset-agnostic compatible 3DGS PLY loader
 -> gsplat RGB + expected-depth + alpha render
 -> pseudo G-buffer
--> all-lights references
--> MC/RIS, temporal renderer, viewer, or smoke scripts
+-> visibility-aware all-lights reference
+-> MC/RIS, compatibility-gated temporal renderer, viewer, or smoke scripts
 ```
 
 The default manifest now separates asset facts from run selection:
@@ -70,13 +70,15 @@ flowchart LR
 
 - `asset_lights.py`: deterministic asset-scaled lights, including world-space lights for aligned temporal reuse and camera-space lights for older single-frame paths.
 - `deferred.py`: all-lights Lambertian and Blinn-Phong references plus selected-light evaluators.
+- `visibility.py`: expected-depth shadow-map proxy for visibility-aware Lambertian smoke tests.
 
 `restir_gs.restir`
 
-- `proposal.py`: uniform sampling support and the current geometric proposal distribution.
+- `proposal.py`: uniform sampling support, the current geometric proposal distribution, and the visibility-geometric proposal used by the visibility target.
 - `initial.py`: initial MC/RIS estimators. Diffuse remains the default target; Blinn-Phong is opt-in.
-- `temporal.py`: aligned temporal reprojection and carried reservoir combination.
-- `renderer.py`: Phase 31 composition layer for all-lights reference, geometric proposal, initial RIS, and previous-frame temporal reservoir reuse.
+- `visibility.py`: optional initial MC/RIS estimators for the Phase 33 shadow-proxy visible direct-light target.
+- `temporal.py`: aligned temporal reprojection, depth/normal/RGB/motion compatibility gates, and carried reservoir combination.
+- `renderer.py`: composition layer for all-lights reference, target-derived proposal, initial RIS, and previous-frame temporal reservoir reuse. The active runner uses the visibility target; diffuse remains a compatibility baseline.
 - `spatial_mis.py`: retained defensive spatial MIS support from earlier real-asset diagnostics.
 
 `restir_gs.eval`
@@ -100,6 +102,15 @@ scripts\run_aligned_restir_renderer_windows.bat
 scripts\run_active_validation_windows.bat
 ```
 
+Optional visibility-target diagnostics:
+
+```powershell
+scripts\run_aligned_visibility_smoke_windows.bat
+scripts\run_aligned_visibility_ris_smoke_windows.bat
+scripts\run_aligned_visibility_smoke_matrix_windows.bat
+scripts\run_visibility_validation_windows.bat
+```
+
 The active Windows runners share `scripts\_setup_windows_cuda_env.bat` for VS x64, conda CUDA paths, torch extension cache, matplotlib cache, and `gsplat` patch checks.
 
 The smoke matrix writes:
@@ -117,6 +128,8 @@ outputs/aligned_restir/restir_renderer_rows.csv
 outputs/aligned_restir/restir_renderer_summary.json
 outputs/aligned_restir/<asset_id>/contact.png
 ```
+
+The active renderer output is expected to record `target_mode=visibility` and `proposal=visibility_geometric`. To run the retained diffuse baseline, set `RESTIRGS_RESTIR_TARGET_MODE=diffuse` and write to `outputs\aligned_restir_diffuse`.
 
 Useful aligned validation and debugging commands:
 
@@ -139,9 +152,12 @@ These scripts remain available, but they are not the active expansion surface:
 - Single-view real-asset camera probe and proposal-ablation scripts
 - Naive spatial reservoir diagnostic scripts
 
+See `docs/legacy_inventory.md` for the retained historical surface and why it is not deleted.
+
 ## Current Baseline Conclusions
 
-1. The active aligned path is technically healthy: manifest loading, dataset adapter, generic Gaussian loader, renderer, G-buffer, lighting, viewer, and smoke rows run end to end.
+1. The active aligned path is technically healthy: manifest loading, dataset adapter, generic Gaussian loader, renderer, G-buffer, visibility-aware lighting, viewer, and smoke rows run end to end.
 2. The generic Gaussian loading boundary is `load_gaussian_asset(...)`; dataset-specific normalization stays in dataset adapters.
-3. World-space light identities are now stable for aligned temporal reuse.
-4. The aligned testing set is now manifest-first: use `asset_sets.testing` for multi-asset smoke and the Phase 31 renderer path before adding research logic.
+3. World-space light identities are stable for aligned temporal reuse, and history reuse is now gated by depth, world-normal, RGB, and motion compatibility.
+4. The aligned testing set is manifest-first: use `asset_sets.testing` for multi-asset smoke and the aligned renderer path before adding research logic.
+5. The visibility target is the preferred active renderer target and uses the visibility-geometric proposal by default.

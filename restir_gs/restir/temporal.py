@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -19,7 +20,10 @@ from restir_gs.restir.initial import (
 class TemporalLookup:
     prev_pixels: torch.Tensor
     valid_mask: torch.Tensor
+    pre_gate_mask: torch.Tensor
     relative_depth_error: torch.Tensor
+    normal_dot: torch.Tensor
+    rgb_distance: torch.Tensor
     motion_pixels: torch.Tensor
 
 
@@ -50,10 +54,12 @@ def reproject_current_to_previous(
     prev_gbuffer: GBuffer,
     prev_camera: PinholeCamera,
     depth_tolerance: float = 0.05,
+    normal_threshold: float | None = 0.85,
+    rgb_threshold: float | None = 0.20,
+    max_motion_pixels: float | None = 32.0,
 ) -> TemporalLookup:
     """Reproject current valid positions into the previous frame with nearest-neighbor lookup."""
-    if depth_tolerance < 0.0:
-        raise ValueError(f"Expected non-negative depth_tolerance, got {depth_tolerance}")
+    _check_temporal_gate_settings(depth_tolerance, normal_threshold, rgb_threshold, max_motion_pixels)
     _check_camera(current_camera, "current_camera")
     _check_camera(prev_camera, "prev_camera")
 
@@ -89,9 +95,12 @@ def reproject_current_to_previous(
     safe_y = prev_y.clamp(0, max(prev_height - 1, 0))
     flat = safe_y * prev_width + safe_x
 
-    prev_depth = prev_gbuffer.depth.to(device=device, dtype=dtype).reshape(-1)[flat.reshape(-1)].reshape(height, width)
+    flat_indices = flat.reshape(-1)
+    prev_depth = prev_gbuffer.depth.to(device=device, dtype=dtype).reshape(-1)[flat_indices].reshape(height, width)
+    prev_rgb = prev_gbuffer.rgb.to(device=device, dtype=dtype).reshape(-1, 3)[flat_indices].reshape(height, width, 3)
+    prev_normal_cam = prev_gbuffer.normal_cam.to(device=device, dtype=dtype).reshape(-1, 3)[flat_indices].reshape(height, width, 3)
     prev_valid_flat = (prev_gbuffer.valid_mask & prev_gbuffer.normal_mask).to(device=device).reshape(-1)
-    prev_valid = prev_valid_flat[flat.reshape(-1)].reshape(height, width)
+    prev_valid = prev_valid_flat[flat_indices].reshape(height, width)
     relative_depth_error = torch.abs(prev_depth - prev_z) / prev_z.abs().clamp_min(torch.finfo(dtype).eps)
     relative_depth_error = torch.where(
         positive_z & in_bounds,
@@ -99,21 +108,43 @@ def reproject_current_to_previous(
         torch.full_like(relative_depth_error, float("inf")),
     )
 
-    valid = current_valid & positive_z & in_bounds & prev_valid & (relative_depth_error <= float(depth_tolerance))
     ys, xs = torch.meshgrid(
         torch.arange(height, dtype=dtype, device=device),
         torch.arange(width, dtype=dtype, device=device),
         indexing="ij",
     )
-    motion = torch.stack((u - xs, v - ys), dim=-1)
-    motion = torch.where(valid[..., None], motion, torch.zeros_like(motion))
+    raw_motion = torch.stack((u - xs, v - ys), dim=-1)
+    motion_magnitude = torch.linalg.norm(raw_motion, dim=-1)
+
+    pre_gate = current_valid & positive_z & in_bounds & prev_valid & (relative_depth_error <= float(depth_tolerance))
+    relative_depth_error = torch.where(pre_gate, relative_depth_error, torch.full_like(relative_depth_error, float("inf")))
+    normal_dot = _world_normal_dot(current_gbuffer, current_camera, prev_normal_cam, prev_camera, dtype=dtype, device=device)
+    rgb_distance = torch.mean(torch.abs(current_gbuffer.rgb.to(device=device, dtype=dtype) - prev_rgb), dim=-1)
+
+    normal_pass = torch.ones_like(pre_gate)
+    if normal_threshold is not None:
+        normal_pass = normal_dot >= float(normal_threshold)
+    rgb_pass = torch.ones_like(pre_gate)
+    if rgb_threshold is not None:
+        rgb_pass = rgb_distance <= float(rgb_threshold)
+    motion_pass = torch.ones_like(pre_gate)
+    if max_motion_pixels is not None:
+        motion_pass = motion_magnitude <= float(max_motion_pixels)
+    valid = pre_gate & normal_pass & rgb_pass & motion_pass
+
+    motion = torch.where(valid[..., None], raw_motion, torch.zeros_like(raw_motion))
     prev_pixels = torch.stack((safe_x, safe_y), dim=-1)
     prev_pixels = torch.where(valid[..., None], prev_pixels, torch.zeros_like(prev_pixels))
+    normal_dot = torch.where(pre_gate, normal_dot, torch.zeros_like(normal_dot))
+    rgb_distance = torch.where(pre_gate, rgb_distance, torch.full_like(rgb_distance, float("inf")))
 
     return TemporalLookup(
         prev_pixels=prev_pixels,
         valid_mask=valid,
+        pre_gate_mask=pre_gate,
         relative_depth_error=relative_depth_error,
+        normal_dot=normal_dot,
+        rgb_distance=rgb_distance,
         motion_pixels=motion,
     )
 
@@ -128,6 +159,7 @@ def combine_temporal_reservoirs(
     selection_seed: int,
     ambient: float = 0.2,
     target_mode: LightingTargetMode = "diffuse",
+    contribution_evaluator: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[LightingEstimatorBuffers, TemporalReservoirState]:
     """Combine current initial reservoir with a reprojected previous reservoir."""
     _check_lookup_shapes(lookup, current_gbuffer)
@@ -149,12 +181,15 @@ def combine_temporal_reservoirs(
         ),
         dim=-1,
     )
-    contribution_candidates = evaluate_selected_light_contribution(
-        current_gbuffer,
-        lights,
-        candidate_indices,
-        target_mode=target_mode,
-    )
+    if contribution_evaluator is None:
+        contribution_candidates = evaluate_selected_light_contribution(
+            current_gbuffer,
+            lights,
+            candidate_indices,
+            target_mode=target_mode,
+        )
+    else:
+        contribution_candidates = contribution_evaluator(candidate_indices)
     target_values = _luminance(contribution_candidates).clamp_min(0.0)
     candidate_w = torch.stack((current_reservoir.W.to(device=device, dtype=dtype), prev_w), dim=-1)
     candidate_m = torch.stack((current_reservoir.M.to(device=device), prev_m), dim=-1)
@@ -242,8 +277,14 @@ def _check_lookup_shapes(lookup: TemporalLookup, gbuffer: GBuffer) -> None:
         raise ValueError(f"Expected prev_pixels shape [H,W,2], got {tuple(lookup.prev_pixels.shape)}")
     if lookup.valid_mask.shape != image_shape:
         raise ValueError(f"Expected lookup valid mask shape {tuple(image_shape)}, got {tuple(lookup.valid_mask.shape)}")
+    if lookup.pre_gate_mask.shape != image_shape:
+        raise ValueError(f"Expected lookup pre-gate mask shape {tuple(image_shape)}, got {tuple(lookup.pre_gate_mask.shape)}")
     if lookup.relative_depth_error.shape != image_shape:
         raise ValueError("Expected relative depth error shape to match current image shape.")
+    if lookup.normal_dot.shape != image_shape:
+        raise ValueError("Expected normal dot shape to match current image shape.")
+    if lookup.rgb_distance.shape != image_shape:
+        raise ValueError("Expected RGB distance shape to match current image shape.")
     if lookup.motion_pixels.shape != (*image_shape, 2):
         raise ValueError(f"Expected motion_pixels shape [H,W,2], got {tuple(lookup.motion_pixels.shape)}")
 
@@ -251,3 +292,37 @@ def _check_lookup_shapes(lookup: TemporalLookup, gbuffer: GBuffer) -> None:
 def _luminance(rgb: torch.Tensor) -> torch.Tensor:
     weights = torch.tensor([0.2126, 0.7152, 0.0722], dtype=rgb.dtype, device=rgb.device)
     return torch.sum(rgb * weights, dim=-1)
+
+
+def _world_normal_dot(
+    current_gbuffer: GBuffer,
+    current_camera: PinholeCamera,
+    prev_normal_cam: torch.Tensor,
+    prev_camera: PinholeCamera,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    current_inv = torch.linalg.inv(current_camera.viewmats[0].to(device=device, dtype=dtype))
+    prev_inv = torch.linalg.inv(prev_camera.viewmats[0].to(device=device, dtype=dtype))
+    current_normal = current_gbuffer.normal_cam.to(device=device, dtype=dtype)
+    current_world = torch.einsum("ij,hwj->hwi", current_inv[:3, :3], current_normal)
+    prev_world = torch.einsum("ij,hwj->hwi", prev_inv[:3, :3], prev_normal_cam)
+    current_world = torch.nn.functional.normalize(current_world, dim=-1, eps=torch.finfo(dtype).eps)
+    prev_world = torch.nn.functional.normalize(prev_world, dim=-1, eps=torch.finfo(dtype).eps)
+    return torch.sum(current_world * prev_world, dim=-1).clamp(-1.0, 1.0)
+
+
+def _check_temporal_gate_settings(
+    depth_tolerance: float,
+    normal_threshold: float | None,
+    rgb_threshold: float | None,
+    max_motion_pixels: float | None,
+) -> None:
+    if depth_tolerance < 0.0:
+        raise ValueError(f"Expected non-negative depth_tolerance, got {depth_tolerance}")
+    if normal_threshold is not None and not -1.0 <= normal_threshold <= 1.0:
+        raise ValueError(f"Expected normal_threshold in [-1,1] or None, got {normal_threshold}")
+    if rgb_threshold is not None and rgb_threshold < 0.0:
+        raise ValueError(f"Expected non-negative rgb_threshold or None, got {rgb_threshold}")
+    if max_motion_pixels is not None and max_motion_pixels < 0.0:
+        raise ValueError(f"Expected non-negative max_motion_pixels or None, got {max_motion_pixels}")

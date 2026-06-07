@@ -26,7 +26,10 @@ def test_identity_reprojection_maps_pixels_to_themselves() -> None:
     assert torch.equal(lookup.prev_pixels[..., 0], xs)
     assert torch.equal(lookup.prev_pixels[..., 1], ys)
     assert torch.equal(lookup.valid_mask, torch.ones((2, 3), dtype=torch.bool))
+    assert torch.equal(lookup.pre_gate_mask, torch.ones((2, 3), dtype=torch.bool))
     assert torch.allclose(lookup.relative_depth_error, torch.zeros((2, 3)))
+    assert torch.allclose(lookup.normal_dot, torch.ones((2, 3)))
+    assert torch.allclose(lookup.rgb_distance, torch.zeros((2, 3)))
 
 
 def test_depth_mismatch_rejects_history_reuse() -> None:
@@ -37,7 +40,8 @@ def test_depth_mismatch_rejects_history_reuse() -> None:
     lookup = reproject_current_to_previous(current, camera, previous, camera, depth_tolerance=0.05)
 
     assert not bool(lookup.valid_mask.any())
-    assert bool(torch.isfinite(lookup.relative_depth_error).all())
+    assert not bool(lookup.pre_gate_mask.any())
+    assert bool(torch.isinf(lookup.relative_depth_error).all())
 
 
 def test_invalid_previous_pixels_reject_history_reuse() -> None:
@@ -49,7 +53,79 @@ def test_invalid_previous_pixels_reject_history_reuse() -> None:
     lookup = reproject_current_to_previous(current, camera, previous, camera)
 
     assert not bool(lookup.valid_mask[0, 0])
+    assert not bool(lookup.pre_gate_mask[0, 0])
     assert bool(lookup.valid_mask[0, 1])
+
+
+def test_normal_mismatch_rejects_history_after_pre_gate() -> None:
+    current = make_projective_gbuffer(width=2, height=2, depth=2.0)
+    previous = make_projective_gbuffer(width=2, height=2, depth=2.0, normal=(1.0, 0.0, 0.0))
+    camera = make_camera(width=2, height=2)
+
+    lookup = reproject_current_to_previous(current, camera, previous, camera, normal_threshold=0.85)
+
+    assert bool(lookup.pre_gate_mask.all())
+    assert not bool(lookup.valid_mask.any())
+    assert torch.allclose(lookup.normal_dot, torch.zeros((2, 2)))
+
+
+def test_rgb_mismatch_rejects_history_after_pre_gate() -> None:
+    current = make_projective_gbuffer(width=2, height=2, depth=2.0)
+    previous = make_projective_gbuffer(width=2, height=2, depth=2.0)
+    previous.rgb.zero_()
+    camera = make_camera(width=2, height=2)
+
+    lookup = reproject_current_to_previous(current, camera, previous, camera, rgb_threshold=0.2)
+
+    assert bool(lookup.pre_gate_mask.all())
+    assert not bool(lookup.valid_mask.any())
+    assert torch.allclose(lookup.rgb_distance, torch.ones((2, 2)))
+
+
+def test_large_motion_rejects_history_when_motion_cap_enabled() -> None:
+    current = make_projective_gbuffer(width=3, height=1, depth=2.0)
+    previous = make_projective_gbuffer(width=3, height=1, depth=2.0)
+    current_camera = make_camera(width=3, height=1)
+    previous_camera = PinholeCamera(
+        viewmats=torch.tensor(
+            [
+                [
+                    [1.0, 0.0, 0.0, 1.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            ],
+            dtype=torch.float32,
+        ),
+        intrinsics=current_camera.intrinsics.clone(),
+        width=3,
+        height=1,
+    )
+
+    lookup = reproject_current_to_previous(current, current_camera, previous, previous_camera, max_motion_pixels=0.49)
+
+    assert bool(lookup.pre_gate_mask.any())
+    assert not bool(lookup.valid_mask.any())
+
+
+def test_disabled_optional_gates_preserve_depth_only_behavior() -> None:
+    current = make_projective_gbuffer(width=2, height=2, depth=2.0)
+    previous = make_projective_gbuffer(width=2, height=2, depth=2.0, rgb=0.0, normal=(1.0, 0.0, 0.0))
+    camera = make_camera(width=2, height=2)
+
+    lookup = reproject_current_to_previous(
+        current,
+        camera,
+        previous,
+        camera,
+        normal_threshold=None,
+        rgb_threshold=None,
+        max_motion_pixels=None,
+    )
+
+    assert bool(lookup.pre_gate_mask.all())
+    assert bool(lookup.valid_mask.all())
 
 
 def test_no_valid_history_matches_current_initial_output_exactly() -> None:
@@ -139,6 +215,36 @@ def test_history_light_is_reevaluated_at_current_pixel() -> None:
     assert torch.allclose(buffers.contribution_rgb, expected)
 
 
+def test_temporal_combine_uses_custom_contribution_evaluator() -> None:
+    gbuffer = make_single_pixel_gbuffer(valid=True)
+    lights = make_two_lights()
+    current_buffers = LightingEstimatorBuffers(
+        contribution_rgb=torch.zeros((1, 1, 3)),
+        composite_rgb=gbuffer.rgb.clone(),
+        valid_mask=torch.zeros((1, 1), dtype=torch.bool),
+    )
+    current = make_temporal_reservoir(light=0, W=0.0, M=0, valid=False)
+    previous = make_temporal_reservoir(light=1, W=1.0, M=1, valid=True)
+    lookup = make_lookup(valid=True)
+
+    def evaluator(light_indices: torch.Tensor) -> torch.Tensor:
+        return light_indices.to(torch.float32)[..., None].expand(*light_indices.shape, 3)
+
+    buffers, reservoir = combine_temporal_reservoirs(
+        gbuffer,
+        lights,
+        current_buffers,
+        current,
+        previous,
+        lookup,
+        selection_seed=12,
+        contribution_evaluator=evaluator,
+    )
+
+    assert torch.allclose(buffers.contribution_rgb, torch.ones((1, 1, 3)))
+    assert torch.equal(reservoir.light_indices, torch.tensor([[1]]))
+
+
 def test_temporal_combine_is_deterministic_for_same_seed() -> None:
     gbuffer = make_single_pixel_gbuffer(valid=True)
     lights = make_two_lights()
@@ -222,19 +328,24 @@ def make_camera(width: int, height: int) -> PinholeCamera:
     )
 
 
-def make_projective_gbuffer(width: int, height: int, depth: float) -> GBuffer:
+def make_projective_gbuffer(
+    width: int,
+    height: int,
+    depth: float,
+    rgb: float = 1.0,
+    normal: tuple[float, float, float] = (0.0, 0.0, 1.0),
+) -> GBuffer:
     ys, xs = torch.meshgrid(torch.arange(height, dtype=torch.float32), torch.arange(width, dtype=torch.float32), indexing="ij")
     z = torch.full((height, width), depth, dtype=torch.float32)
     position = torch.stack((xs * z, ys * z, z), dim=-1)
-    normal = torch.zeros_like(position)
-    normal[..., 2] = 1.0
+    normal_tensor = torch.tensor(normal, dtype=torch.float32).expand_as(position).clone()
     valid = torch.ones((height, width), dtype=torch.bool)
     return GBuffer(
-        rgb=torch.ones((height, width, 3), dtype=torch.float32),
+        rgb=torch.full((height, width, 3), rgb, dtype=torch.float32),
         depth=z,
         alpha=torch.ones((height, width), dtype=torch.float32),
         position_cam=position,
-        normal_cam=normal,
+        normal_cam=normal_tensor,
         valid_mask=valid.clone(),
         normal_mask=valid.clone(),
     )
@@ -268,7 +379,10 @@ def make_lookup(valid: bool) -> TemporalLookup:
     return TemporalLookup(
         prev_pixels=torch.zeros((1, 1, 2), dtype=torch.long),
         valid_mask=torch.tensor([[valid]], dtype=torch.bool),
+        pre_gate_mask=torch.tensor([[valid]], dtype=torch.bool),
         relative_depth_error=torch.zeros((1, 1), dtype=torch.float32),
+        normal_dot=torch.ones((1, 1), dtype=torch.float32) if valid else torch.zeros((1, 1), dtype=torch.float32),
+        rgb_distance=torch.zeros((1, 1), dtype=torch.float32) if valid else torch.full((1, 1), float("inf")),
         motion_pixels=torch.zeros((1, 1, 2), dtype=torch.float32),
     )
 

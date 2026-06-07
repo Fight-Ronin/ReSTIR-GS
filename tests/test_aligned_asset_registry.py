@@ -283,9 +283,25 @@ def test_active_validation_runner_chains_current_active_runners() -> None:
     assert "RESTIRGS_ALIGNED_ASSET_SET" in text
     assert "RESTIRGS_ALIGNED_ASSET_IDS" in text
     assert "RESTIRGS_ALIGNED_SMOKE_EXTRA_ARGS" in text
-    assert "RESTIRGS_RESTIR_EXTRA_ARGS" in text
     assert "scripts\\demo_24_aligned_asset_smoke_matrix.py" in text
+    assert "scripts\\run_aligned_restir_renderer_windows.bat" in text
+
+
+def test_restir_renderer_windows_runner_documents_active_visibility_defaults() -> None:
+    runner = Path("scripts/run_aligned_restir_renderer_windows.bat")
+    text = runner.read_text(encoding="utf-8")
+
+    assert "RESTIRGS_RESTIR_TARGET_MODE=visibility" in text
+    assert "RESTIRGS_RESTIR_NUM_LIGHTS=16" in text
+    assert "RESTIRGS_RESTIR_WIDTH=128" in text
+    assert "RESTIRGS_RESTIR_HEIGHT=128" in text
+    assert "RESTIRGS_RESTIR_FRAME_INDICES=45,46,47" in text
+    assert "RESTIRGS_RESTIR_FRAME_INDICES%\"==\"manifest" in text
+    assert "RESTIRGS_RESTIR_OUTPUT_DIR=outputs\\aligned_restir" in text
+    assert "RESTIRGS_RESTIR_EXTRA_ARGS" in text
     assert "scripts\\demo_26_aligned_restir_renderer.py" in text
+    assert "--target-mode" in text
+    assert "--num-lights" in text
 
 
 def test_active_windows_runners_share_cuda_preflight() -> None:

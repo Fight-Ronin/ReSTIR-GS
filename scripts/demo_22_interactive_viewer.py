@@ -19,8 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from restir_gs.lighting.asset_lights import make_asset_scaled_point_lights
+from restir_gs.lighting.asset_lights import make_asset_scaled_point_lights, make_asset_scaled_world_lights, world_lights_to_camera_lights
 from restir_gs.lighting.deferred import LightingBuffers, shade_deferred_blinn_phong, shade_deferred_lambertian
+from restir_gs.lighting.visibility import ShadowMapBundle, make_shadow_map_bundle, shade_deferred_lambertian_visible
 from restir_gs.render.aligned_asset_registry import (
     DEFAULT_MANIFEST_PATH,
     get_aligned_asset_spec,
@@ -45,7 +46,12 @@ from restir_gs.render.ply_loader import load_gaussian_asset, make_asset_camera
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.render.synthetic_scene import SyntheticGaussians
 from restir_gs.restir.initial import LightingEstimatorBuffers, estimate_proposal_lighting, estimate_ris_initial_lighting
-from restir_gs.restir.proposal import compute_geometric_proposal_distribution, sample_light_candidates_from_distribution
+from restir_gs.restir.proposal import (
+    compute_geometric_proposal_distribution,
+    compute_visibility_geometric_proposal_distribution,
+    sample_light_candidates_from_distribution,
+)
+from restir_gs.restir.visibility import estimate_visibility_proposal_lighting, estimate_visibility_ris_initial_lighting
 from scripts.download_dxgl_apple import DEFAULT_EXTRACT_DIR, find_dxgl_dataset_root, validate_dxgl_dataset_root
 from scripts.download_dxgl_apple_splat import DEFAULT_SPLAT_PATH, validate_dxgl_splat_file
 
@@ -75,6 +81,21 @@ class ViewerRestirResult:
 
 
 @dataclass
+class ViewerVisibilityCache:
+    world_lights: Any
+    shadow_bundle: ShadowMapBundle
+    light_info: dict[str, object]
+
+
+@dataclass
+class ViewerVisibilityResult:
+    reference: LightingBuffers
+    geometric_mc: LightingEstimatorBuffers
+    initial_ris: LightingEstimatorBuffers
+    error: torch.Tensor
+
+
+@dataclass
 class ViewerRenderResult:
     frame_index: int
     state: OrbitCameraState
@@ -82,6 +103,7 @@ class ViewerRenderResult:
     lambertian: LightingBuffers
     blinn_phong: LightingBuffers
     restir: ViewerRestirResult
+    visibility: ViewerVisibilityResult | None
     valid_pixels: int
     render_ms: float
     light_info: dict[str, object]
@@ -138,6 +160,11 @@ def render_view(
     ambient: float,
     specular_strength: float,
     shininess: float,
+    visibility_cache: ViewerVisibilityCache | None,
+    visibility_candidate_count: int,
+    visibility_candidate_seed: int,
+    visibility_selection_seed: int,
+    visibility_shadow_alpha_threshold: float,
     device: torch.device,
 ) -> ViewerRenderResult:
     camera = orbit_state_to_camera(state, device=device)
@@ -180,6 +207,57 @@ def render_view(
             target_mode="diffuse",
         )
         proposal_confidence = proposal.max(dim=-1).values
+        visibility_result = None
+        if visibility_cache is not None:
+            visibility_lights = world_lights_to_camera_lights(visibility_cache.world_lights, camera)
+            visibility_reference = shade_deferred_lambertian_visible(
+                gbuffer,
+                camera,
+                visibility_lights,
+                visibility_cache.shadow_bundle,
+                ambient=ambient,
+                alpha_threshold=visibility_shadow_alpha_threshold,
+            )
+            visibility_proposal = compute_visibility_geometric_proposal_distribution(
+                gbuffer,
+                camera,
+                visibility_lights,
+                visibility_cache.shadow_bundle,
+                alpha_threshold=visibility_shadow_alpha_threshold,
+            )
+            visibility_samples = sample_light_candidates_from_distribution(
+                visibility_proposal,
+                visibility_candidate_count,
+                seed=visibility_candidate_seed,
+                device=device,
+            )
+            visibility_mc = estimate_visibility_proposal_lighting(
+                gbuffer,
+                camera,
+                visibility_lights,
+                visibility_cache.shadow_bundle,
+                visibility_samples,
+                ambient=ambient,
+                alpha_threshold=visibility_shadow_alpha_threshold,
+            )
+            visibility_ris, _ = estimate_visibility_ris_initial_lighting(
+                gbuffer,
+                camera,
+                visibility_lights,
+                visibility_cache.shadow_bundle,
+                visibility_samples.light_indices,
+                proposal_probs=visibility_samples.proposal_probs,
+                selection_seed=visibility_selection_seed,
+                ambient=ambient,
+                alpha_threshold=visibility_shadow_alpha_threshold,
+            )
+            visibility_error = torch.abs(visibility_ris.contribution_rgb - visibility_reference.diffuse_rgb).mean(dim=-1)
+            visibility_result = ViewerVisibilityResult(
+                reference=visibility_reference,
+                geometric_mc=visibility_mc,
+                initial_ris=visibility_ris,
+                error=visibility_error,
+            )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     render_ms = (time.perf_counter() - start) * 1000.0
@@ -196,6 +274,7 @@ def render_view(
             initial_ris=initial_ris,
             proposal_confidence=proposal_confidence,
         ),
+        visibility=visibility_result,
         valid_pixels=valid_pixels,
         render_ms=render_ms,
         light_info=light_info,
@@ -217,6 +296,33 @@ def reset_state_from_frame(
     return orbit_state_from_camera(camera, target=target)
 
 
+def make_visibility_cache(
+    asset: ViewerAsset,
+    num_lights: int,
+    light_seed: int,
+    shadow_resolution: int,
+    shadow_bias_scale: float,
+    device: torch.device,
+) -> ViewerVisibilityCache:
+    world_lights, light_info = make_asset_scaled_world_lights(
+        asset.scene.means,
+        count=num_lights,
+        seed=light_seed,
+        device=device,
+    )
+    target_world = torch.tensor(light_info["center"], dtype=torch.float32, device=device)
+    shadow_bundle = make_shadow_map_bundle(
+        asset.scene,
+        world_lights.positions_world,
+        torch.arange(num_lights, dtype=torch.long, device=device),
+        target_world,
+        scene_radius=float(light_info["radius"]),
+        resolution=shadow_resolution,
+        shadow_bias_scale=shadow_bias_scale,
+    )
+    return ViewerVisibilityCache(world_lights=world_lights, shadow_bundle=shadow_bundle, light_info=light_info)
+
+
 def save_outputs(
     result: ViewerRenderResult,
     output_dir: Path,
@@ -230,11 +336,19 @@ def save_outputs(
         "normal": output_dir / "current_normal.png",
         "blinn_phong": output_dir / "current_blinn_phong.png",
     }
+    if result.visibility is not None:
+        paths["visibility_reference"] = output_dir / "current_visibility_reference.png"
+        paths["visibility_ris"] = output_dir / "current_visibility_ris.png"
+        paths["visibility_error"] = output_dir / "current_visibility_error.png"
     save_orbit_camera_config(result.state, paths["camera"], metadata=metadata)
     imageio.imwrite(paths["rgb"], to_u8_rgb(result.gbuffer.rgb))
     imageio.imwrite(paths["alpha"], (result.gbuffer.alpha.detach().cpu().clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8))
     imageio.imwrite(paths["normal"], to_u8_normal(result.gbuffer.normal_cam, result.gbuffer.normal_mask))
     imageio.imwrite(paths["blinn_phong"], to_u8_rgb(result.blinn_phong.composite_rgb))
+    if result.visibility is not None:
+        imageio.imwrite(paths["visibility_reference"], to_u8_rgb(result.visibility.reference.composite_rgb))
+        imageio.imwrite(paths["visibility_ris"], to_u8_rgb(result.visibility.initial_ris.composite_rgb))
+        imageio.imwrite(paths["visibility_error"], to_u8_scalar(result.visibility.error, result.visibility.reference.valid_mask))
     return {key: str(path) for key, path in paths.items()}
 
 
@@ -257,12 +371,26 @@ def panel_images(result: ViewerRenderResult, mode: str) -> list[tuple[str, np.nd
         "Initial Error": to_u8_scalar(restir_error, result.restir.reference.valid_mask),
         "Proposal Max": to_u8_scalar(result.restir.proposal_confidence, valid),
     }
+    if result.visibility is not None:
+        shared.update(
+            {
+                "Visible Reference": to_u8_rgb(result.visibility.reference.composite_rgb),
+                "Visible Geom MC": to_u8_rgb(result.visibility.geometric_mc.composite_rgb),
+                "Visible RIS": to_u8_rgb(result.visibility.initial_ris.composite_rgb),
+                "Visible Error": to_u8_scalar(result.visibility.error, result.visibility.reference.valid_mask),
+            }
+        )
     if mode == "gbuffer":
         keys = ["RGB", "Alpha", "Depth", "Normal", "Valid", "Blinn-Phong"]
     elif mode == "lighting":
         keys = ["RGB", "Lambertian", "Blinn-Phong", "Specular", "Normal", "Alpha"]
     elif mode == "restir":
         keys = ["Reference", "Geometric MC", "Initial RIS", "Initial Error", "Proposal Max", "Alpha"]
+    elif mode == "visibility":
+        if result.visibility is None:
+            keys = ["RGB", "Alpha", "Depth", "Normal", "Lambertian", "Blinn-Phong"]
+        else:
+            keys = ["Visible Reference", "Visible Geom MC", "Visible RIS", "Visible Error", "Proposal Max", "Alpha"]
     else:
         keys = ["RGB", "Alpha", "Depth", "Normal", "Lambertian", "Blinn-Phong"]
     return [(key, shared[key]) for key in keys]
@@ -275,6 +403,7 @@ class InteractiveViewer:
         self.device = device
         self.frame_index = int(args.frame_index)
         self.mode = "rgb"
+        self.visibility_cache: ViewerVisibilityCache | None = None
         self.drag_start: tuple[float, float] | None = None
         self.drag_mode: str | None = None
         self.closed = False
@@ -294,6 +423,11 @@ class InteractiveViewer:
             ambient=self.args.ambient,
             specular_strength=self.args.specular_strength,
             shininess=self.args.shininess,
+            visibility_cache=self.visibility_cache if self.mode == "visibility" else None,
+            visibility_candidate_count=self.args.visibility_candidate_count,
+            visibility_candidate_seed=self.args.visibility_candidate_seed,
+            visibility_selection_seed=self.args.visibility_selection_seed,
+            visibility_shadow_alpha_threshold=self.args.visibility_shadow_alpha_threshold,
             device=self.device,
         )
 
@@ -399,6 +533,20 @@ class InteractiveViewer:
         if key == "4":
             self.mode = "restir"
             self.draw()
+            return
+        if key == "5":
+            self.mode = "visibility"
+            if self.visibility_cache is None:
+                print("building visibility shadow-map cache...")
+                self.visibility_cache = make_visibility_cache(
+                    self.asset,
+                    num_lights=self.args.visibility_num_lights,
+                    light_seed=self.args.visibility_light_seed,
+                    shadow_resolution=self.args.visibility_shadow_resolution,
+                    shadow_bias_scale=self.args.visibility_shadow_bias_scale,
+                    device=self.device,
+                )
+            self.rerender_and_draw()
             return
         if key == "r":
             self.state = reset_state_from_frame(self.asset, self.frame_index, self.args.width, self.args.height, self.device)
@@ -561,6 +709,14 @@ def _save_metadata(args: argparse.Namespace, result: ViewerRenderResult, asset: 
         "restir_candidate_count": args.restir_candidate_count,
         "restir_candidate_seed": args.restir_candidate_seed,
         "restir_selection_seed": args.restir_selection_seed,
+        "visibility_num_lights": args.visibility_num_lights,
+        "visibility_light_seed": args.visibility_light_seed,
+        "visibility_candidate_count": args.visibility_candidate_count,
+        "visibility_candidate_seed": args.visibility_candidate_seed,
+        "visibility_selection_seed": args.visibility_selection_seed,
+        "visibility_shadow_resolution": args.visibility_shadow_resolution,
+        "visibility_shadow_bias_scale": args.visibility_shadow_bias_scale,
+        "visibility_shadow_alpha_threshold": args.visibility_shadow_alpha_threshold,
         "ambient": args.ambient,
         "specular_strength": args.specular_strength,
         "shininess": args.shininess,
@@ -617,18 +773,33 @@ def main() -> int:
     parser.add_argument("--restir-candidate-count", type=int, default=8)
     parser.add_argument("--restir-candidate-seed", type=int, default=34100)
     parser.add_argument("--restir-selection-seed", type=int, default=35100)
+    parser.add_argument("--visibility-num-lights", type=int, default=16)
+    parser.add_argument("--visibility-light-seed", type=int, default=2027)
+    parser.add_argument("--visibility-candidate-count", type=int, default=8)
+    parser.add_argument("--visibility-candidate-seed", type=int, default=36100)
+    parser.add_argument("--visibility-selection-seed", type=int, default=37100)
+    parser.add_argument("--visibility-shadow-resolution", type=int, default=128)
+    parser.add_argument("--visibility-shadow-bias-scale", type=float, default=0.02)
+    parser.add_argument("--visibility-shadow-alpha-threshold", type=float, default=1e-4)
     parser.add_argument("--ambient", type=float, default=0.2)
     parser.add_argument("--specular-strength", type=float, default=0.15)
     parser.add_argument("--shininess", type=float, default=24.0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--save-and-exit", action="store_true")
+    parser.add_argument("--save-visibility", action="store_true", help="With --save-and-exit, also save the visibility inspection outputs.")
     args = parser.parse_args()
 
     if args.width <= 0 or args.height <= 0:
         raise ValueError(f"Expected positive viewer size, got {args.width}x{args.height}")
     if args.restir_candidate_count <= 0:
         raise ValueError(f"Expected positive restir_candidate_count, got {args.restir_candidate_count}")
+    if args.visibility_num_lights <= 0 or args.visibility_candidate_count <= 0:
+        raise ValueError("Expected positive visibility light and candidate counts.")
+    if args.visibility_shadow_resolution <= 0:
+        raise ValueError(f"Expected positive visibility_shadow_resolution, got {args.visibility_shadow_resolution}")
+    if args.visibility_shadow_bias_scale < 0.0 or args.visibility_shadow_alpha_threshold < 0.0:
+        raise ValueError("Expected non-negative visibility shadow bias scale and alpha threshold.")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is False.")
     device = torch.device(args.device)
@@ -641,6 +812,16 @@ def main() -> int:
 
     if args.save_and_exit:
         state = reset_state_from_frame(asset, args.frame_index, args.width, args.height, device)
+        visibility_cache = None
+        if args.save_visibility:
+            visibility_cache = make_visibility_cache(
+                asset,
+                num_lights=args.visibility_num_lights,
+                light_seed=args.visibility_light_seed,
+                shadow_resolution=args.visibility_shadow_resolution,
+                shadow_bias_scale=args.visibility_shadow_bias_scale,
+                device=device,
+            )
         result = render_view(
             asset,
             args.frame_index,
@@ -653,6 +834,11 @@ def main() -> int:
             ambient=args.ambient,
             specular_strength=args.specular_strength,
             shininess=args.shininess,
+            visibility_cache=visibility_cache,
+            visibility_candidate_count=args.visibility_candidate_count,
+            visibility_candidate_seed=args.visibility_candidate_seed,
+            visibility_selection_seed=args.visibility_selection_seed,
+            visibility_shadow_alpha_threshold=args.visibility_shadow_alpha_threshold,
             device=device,
         )
         paths = save_outputs(result, args.output_dir, metadata=_save_metadata(args, result, asset))

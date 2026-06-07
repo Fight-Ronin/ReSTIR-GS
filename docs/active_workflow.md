@@ -2,6 +2,8 @@
 
 This is the short path to use for current development. Historical phase scripts remain available, but new work should start here.
 
+For the current stable baseline, retained compatibility path, and viewer inspection readout, see `docs/current_milestone_snapshot.md`.
+
 ## 1. Environment
 
 ```powershell
@@ -53,7 +55,7 @@ It runs:
 
 ```text
 aligned asset smoke matrix
-aligned ReSTIR renderer path
+aligned ReSTIR renderer path with visibility target
 ```
 
 The runner performs the Windows Visual Studio/CUDA/`gsplat` preflight once through `scripts\_setup_windows_cuda_env.bat`.
@@ -84,6 +86,13 @@ outputs/aligned_restir/<asset_id>/contact.png
 outputs/aligned_restir/<asset_id>/final_*.png
 ```
 
+The active renderer summary should record:
+
+```text
+target_mode=visibility
+proposal=visibility_geometric
+```
+
 ## 5. Interactive Inspection
 
 Open the viewer on a registered asset:
@@ -100,10 +109,44 @@ Useful viewer modes:
 2: G-buffer
 3: lighting
 4: single-frame ReSTIR inspection
+5: optional visibility target inspection
+```
+
+## Retained Diffuse Compatibility
+
+The old diffuse renderer remains available for debugging:
+
+```powershell
+$env:RESTIRGS_RESTIR_TARGET_MODE="diffuse"
+$env:RESTIRGS_RESTIR_NUM_LIGHTS="128"
+$env:RESTIRGS_RESTIR_WIDTH="256"
+$env:RESTIRGS_RESTIR_HEIGHT="256"
+$env:RESTIRGS_RESTIR_FRAME_INDICES="manifest"
+$env:RESTIRGS_RESTIR_OUTPUT_DIR="outputs\aligned_restir_diffuse"
+scripts\run_aligned_restir_renderer_windows.bat
+```
+
+## Optional Visibility Diagnostics
+
+These deeper visibility diagnostics are optional because active validation already uses the visibility renderer:
+
+```powershell
+scripts\run_aligned_visibility_smoke_windows.bat
+scripts\run_aligned_visibility_ris_smoke_windows.bat
+scripts\run_aligned_visibility_smoke_matrix_windows.bat
+scripts\run_visibility_validation_windows.bat
+```
+
+They write under:
+
+```text
+outputs/aligned_visibility/
+outputs/aligned_visibility_ris/
+outputs/aligned_visibility_matrix/
 ```
 
 ## Current Boundaries
 
 - Active dataset path: aligned DXGL assets through the manifest registry.
-- Active renderer path: diffuse target, geometric proposal, world-space lights, initial RIS, previous-frame temporal reuse.
+- Active renderer path: visibility target, visibility-geometric proposal, world-space lights, initial RIS, compatibility-gated previous-frame temporal reuse.
 - Historical Voxel51, single-view PLY, broad ablation, and spatial diagnostic scripts are retained for reproducibility but are not the current expansion surface.

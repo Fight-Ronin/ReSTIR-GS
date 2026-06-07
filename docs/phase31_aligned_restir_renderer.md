@@ -32,6 +32,8 @@ The algorithm is intentionally fixed for this phase:
 
 For the first frame, temporal output is exactly the initial RIS output. For later frames, the previous reservoir is reprojected into the current frame, the selected previous light is re-evaluated at the current pixel, and the combined reservoir is carried forward.
 
+Phase 32 tightens the history acceptance with depth, world-normal, RGB, and motion compatibility gates; see `docs/phase32_temporal_compatibility_gate.md`.
+
 ## Outputs
 
 Run:

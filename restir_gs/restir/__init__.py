@@ -15,6 +15,7 @@ from restir_gs.restir.initial import (
 from restir_gs.restir.proposal import (
     CandidateSamples,
     compute_geometric_proposal_distribution,
+    compute_visibility_geometric_proposal_distribution,
     sample_light_candidates_from_distribution,
 )
 from restir_gs.restir.renderer import (
@@ -41,6 +42,11 @@ from restir_gs.restir.temporal import (
     reproject_current_to_previous,
     temporal_reservoir_from_initial,
 )
+from restir_gs.restir.visibility import (
+    VisibilityEstimatorBuffers,
+    estimate_visibility_proposal_lighting,
+    estimate_visibility_ris_initial_lighting,
+)
 
 __all__ = [
     "CandidateSamples",
@@ -54,9 +60,11 @@ __all__ = [
     "SpatialMISStats",
     "TemporalLookup",
     "TemporalReservoirState",
+    "VisibilityEstimatorBuffers",
     "all_numeric_finite",
     "combine_temporal_reservoirs",
     "compute_geometric_proposal_distribution",
+    "compute_visibility_geometric_proposal_distribution",
     "empty_temporal_lookup",
     "evaluate_restir_frame_from_gbuffer",
     "estimate_proposal_diffuse",
@@ -65,6 +73,8 @@ __all__ = [
     "estimate_ris_initial_lighting",
     "estimate_spatial_mis_diffuse",
     "estimate_uniform_diffuse",
+    "estimate_visibility_proposal_lighting",
+    "estimate_visibility_ris_initial_lighting",
     "evaluate_selected_light_contribution",
     "build_spatial_mis_candidates",
     "make_restir_metric_rows",

@@ -2,7 +2,7 @@
 
 Phase 25 adds a lightweight local viewer for compatible 3DGS splats. The default validation target is the active aligned DXGL Apple asset, but the viewer entrypoint also accepts any GraphDECO/Nerfstudio-style 3DGS `.ply` supported by the generic loader. The viewer is a research/debugging instrument: it lets us orbit, pan, and dolly around a splat, inspect render buffers, and save a replayable camera config for later scripts.
 
-It does not add RIS, spatial reuse, temporal reuse, visibility, new proposal distributions, or new estimators.
+It does not add spatial reuse, temporal reuse, new proposal distributions, or benchmark rows. The viewer can optionally inspect the current initial RIS and visibility-aware direct-light target for debugging.
 
 ## Orbit Camera
 
@@ -50,6 +50,8 @@ load Gaussian splat
 -> shade Lambertian and Blinn-Phong
 -> display a 2x3 matplotlib panel grid
 ```
+
+Pressing `5` enters visibility inspection mode. The viewer builds a small scene-stable world-light shadow-map cache once, then reuses it while orbiting the camera.
 
 Default settings:
 
@@ -103,6 +105,8 @@ Mouse wheel               dolly in/out
 1                         RGB overview mode
 2                         G-buffer mode
 3                         lighting mode
+4                         single-frame ReSTIR mode
+5                         visibility target mode
 r                         reset to current DXGL frame camera
 s                         save current camera and preview images
 q                         quit
@@ -120,6 +124,14 @@ outputs/interactive_viewer/current_normal.png
 outputs/interactive_viewer/current_blinn_phong.png
 ```
 
+When saving from visibility mode, the viewer also writes:
+
+```text
+outputs/interactive_viewer/current_visibility_reference.png
+outputs/interactive_viewer/current_visibility_ris.png
+outputs/interactive_viewer/current_visibility_error.png
+```
+
 `current_camera.json` uses the same minimal camera payload shape as existing camera config loaders, with an extra `orbit_camera_state` field for debugging. Existing loaders ignore that extra field.
 
 For non-interactive validation:
@@ -134,5 +146,6 @@ This renders the default view once, saves the same outputs, and exits without op
 
 - The viewer is debug-usable, not a real-time renderer.
 - Lights are regenerated as camera-space asset-scaled lights for the current view, matching the current deferred lighting demos.
+- Visibility mode uses a separate scene-stable world-light set and expected-depth shadow-map proxy. It is for inspection, not a benchmark.
 - The saved camera is useful for replaying aligned render/debug scripts, but it is not a benchmark row.
 - The viewer should not be used to draw sampling conclusions; Phase 24 remains the active aligned sampling readout.
