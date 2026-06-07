@@ -127,10 +127,18 @@ def evaluate_shadow_visibility(
     shadow_bundle: ShadowMapBundle,
     light_indices: torch.Tensor,
     alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
 ) -> torch.Tensor:
-    """Evaluate binary shadow-map visibility for selected world-light indices shaped [H,W,K]."""
+    """Evaluate shadow-map visibility for selected world-light indices shaped [H,W,K].
+
+    ``pcf_radius=0`` uses the legacy single nearest shadow texel. Positive radii
+    average hard shadow comparisons over a square PCF kernel and return soft
+    visibility in ``[0, 1]``.
+    """
     if alpha_threshold < 0.0:
         raise ValueError(f"Expected non-negative alpha_threshold, got {alpha_threshold}")
+    if pcf_radius < 0:
+        raise ValueError(f"Expected non-negative pcf_radius, got {pcf_radius}")
     if light_indices.ndim != 3:
         raise ValueError(f"Expected light_indices shape [H,W,K], got {tuple(light_indices.shape)}")
     if light_indices.shape[:2] != gbuffer.depth.shape:
@@ -159,6 +167,7 @@ def evaluate_shadow_visibility(
             shadow_bundle.alpha_maps[slot].to(device=device, dtype=dtype),
             depth_bias=shadow_bundle.depth_bias,
             alpha_threshold=alpha_threshold,
+            pcf_radius=pcf_radius,
         )
         visibility = torch.where(candidate_mask, light_visibility[..., None], visibility)
     return visibility
@@ -171,6 +180,7 @@ def evaluate_selected_light_visible_diffuse(
     shadow_bundle: ShadowMapBundle,
     light_indices: torch.Tensor,
     alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
 ) -> torch.Tensor:
@@ -188,6 +198,7 @@ def evaluate_selected_light_visible_diffuse(
         shadow_bundle,
         light_indices,
         alpha_threshold=alpha_threshold,
+        pcf_radius=pcf_radius,
     )
     return diffuse * visibility[..., None]
 
@@ -199,11 +210,12 @@ def shade_deferred_lambertian_visible(
     shadow_bundle: ShadowMapBundle,
     ambient: float = 0.2,
     alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
     chunk_size: int = 64,
 ) -> LightingBuffers:
-    """Evaluate all-lights Lambertian lighting with binary shadow-map visibility."""
+    """Evaluate all-lights Lambertian lighting with shadow-map visibility."""
     if chunk_size <= 0:
         raise ValueError(f"Expected positive chunk size, got {chunk_size}")
     expected_light_ids = torch.arange(lights.positions_cam.shape[0], dtype=torch.long, device=shadow_bundle.light_indices.device)
@@ -225,6 +237,7 @@ def shade_deferred_lambertian_visible(
             shadow_bundle,
             light_indices,
             alpha_threshold=alpha_threshold,
+            pcf_radius=pcf_radius,
             two_sided=two_sided,
             distance_epsilon=distance_epsilon,
         ).sum(dim=2).reshape(-1, 3)
@@ -284,6 +297,7 @@ def _visibility_for_shadow_slot(
     shadow_alpha: torch.Tensor,
     depth_bias: float,
     alpha_threshold: float,
+    pcf_radius: int,
 ) -> torch.Tensor:
     device = world_positions.device
     dtype = world_positions.dtype
@@ -298,12 +312,58 @@ def _visibility_for_shadow_slot(
     x = torch.round(u).to(torch.long)
     y = torch.round(v).to(torch.long)
     in_bounds = (x >= 0) & (x < width) & (y >= 0) & (y < height)
+    if pcf_radius == 0:
+        return _hard_shadow_compare(
+            x,
+            y,
+            light_z,
+            valid_mask,
+            in_bounds,
+            shadow_depth,
+            shadow_alpha,
+            depth_bias,
+            alpha_threshold,
+        ).to(dtype=dtype)
+
+    visibility_sum = torch.zeros_like(light_z, dtype=dtype)
+    sample_count = 0
+    for dy in range(-pcf_radius, pcf_radius + 1):
+        for dx in range(-pcf_radius, pcf_radius + 1):
+            sample_x = x + dx
+            sample_y = y + dy
+            sample_in_bounds = (sample_x >= 0) & (sample_x < width) & (sample_y >= 0) & (sample_y < height)
+            visibility_sum = visibility_sum + _hard_shadow_compare(
+                sample_x,
+                sample_y,
+                light_z,
+                valid_mask,
+                sample_in_bounds,
+                shadow_depth,
+                shadow_alpha,
+                depth_bias,
+                alpha_threshold,
+            ).to(dtype=dtype)
+            sample_count += 1
+    return visibility_sum / float(sample_count)
+
+
+def _hard_shadow_compare(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    light_z: torch.Tensor,
+    valid_mask: torch.Tensor,
+    in_bounds: torch.Tensor,
+    shadow_depth: torch.Tensor,
+    shadow_alpha: torch.Tensor,
+    depth_bias: float,
+    alpha_threshold: float,
+) -> torch.Tensor:
+    height, width = shadow_depth.shape
     safe_x = x.clamp(0, max(width - 1, 0))
     safe_y = y.clamp(0, max(height - 1, 0))
     flat = safe_y * width + safe_x
-    sampled_depth = shadow_depth.reshape(-1)[flat.reshape(-1)].reshape(world_positions.shape[:2])
-    sampled_alpha = shadow_alpha.reshape(-1)[flat.reshape(-1)].reshape(world_positions.shape[:2])
+    sampled_depth = shadow_depth.reshape(-1)[flat.reshape(-1)].reshape(light_z.shape)
+    sampled_alpha = shadow_alpha.reshape(-1)[flat.reshape(-1)].reshape(light_z.shape)
     no_blocker = sampled_alpha <= float(alpha_threshold)
     depth_pass = light_z <= sampled_depth + float(depth_bias)
-    visible = valid_mask & in_bounds & (light_z > 0.0) & (no_blocker | depth_pass)
-    return visible.to(dtype=dtype)
+    return valid_mask & in_bounds & (light_z > 0.0) & (no_blocker | depth_pass)

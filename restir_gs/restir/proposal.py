@@ -70,16 +70,19 @@ def compute_visibility_geometric_proposal_distribution(
     lights: PointLights,
     shadow_bundle: ShadowMapBundle,
     alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
 ) -> torch.Tensor:
-    """Compute geometric proposal probabilities modulated by binary shadow visibility.
+    """Compute geometric proposal probabilities modulated by shadow visibility.
 
     If no visible light has positive geometric mass for a pixel, the function falls
     back to the base geometric proposal so sampling remains well-defined.
     """
     if alpha_threshold < 0.0:
         raise ValueError(f"Expected non-negative alpha_threshold, got {alpha_threshold}")
+    if pcf_radius < 0:
+        raise ValueError(f"Expected non-negative pcf_radius, got {pcf_radius}")
     light_count = lights.positions_cam.shape[0]
     expected = torch.arange(light_count, dtype=torch.long, device=shadow_bundle.light_indices.device)
     if shadow_bundle.light_indices.shape != (light_count,) or not torch.equal(
@@ -103,6 +106,7 @@ def compute_visibility_geometric_proposal_distribution(
         shadow_bundle,
         all_indices,
         alpha_threshold=alpha_threshold,
+        pcf_radius=pcf_radius,
     ).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
     weights = base * visibility
     weight_sum = weights.sum(dim=-1, keepdim=True)

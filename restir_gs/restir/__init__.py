@@ -29,12 +29,6 @@ from restir_gs.restir.renderer import (
     render_restir_frame,
     summarize_restir_rows,
 )
-from restir_gs.restir.spatial_mis import (
-    SpatialMISCandidates,
-    SpatialMISStats,
-    build_spatial_mis_candidates,
-    estimate_spatial_mis_diffuse,
-)
 from restir_gs.restir.temporal import (
     TemporalLookup,
     TemporalReservoirState,
@@ -56,8 +50,6 @@ __all__ = [
     "RestirHistory",
     "RestirRenderSettings",
     "ReservoirState",
-    "SpatialMISCandidates",
-    "SpatialMISStats",
     "TemporalLookup",
     "TemporalReservoirState",
     "VisibilityEstimatorBuffers",
@@ -71,12 +63,10 @@ __all__ = [
     "estimate_proposal_lighting",
     "estimate_ris_initial_diffuse",
     "estimate_ris_initial_lighting",
-    "estimate_spatial_mis_diffuse",
     "estimate_uniform_diffuse",
     "estimate_visibility_proposal_lighting",
     "estimate_visibility_ris_initial_lighting",
     "evaluate_selected_light_contribution",
-    "build_spatial_mis_candidates",
     "make_restir_metric_rows",
     "reproject_current_to_previous",
     "render_restir_frame",

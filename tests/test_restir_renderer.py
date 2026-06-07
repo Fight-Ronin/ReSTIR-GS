@@ -11,10 +11,13 @@ from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.restir.renderer import (
     RestirRenderSettings,
+    apply_confidence_clamped_temporal_filter,
     all_numeric_finite,
     evaluate_restir_frame_from_gbuffer,
     make_restir_metric_rows,
 )
+from restir_gs.restir.initial import LightingEstimatorBuffers
+from restir_gs.restir.temporal import TemporalLookup
 
 
 def test_no_history_temporal_output_matches_initial_exactly() -> None:
@@ -24,8 +27,11 @@ def test_no_history_temporal_output_matches_initial_exactly() -> None:
 
     assert torch.equal(result.temporal.contribution_rgb, result.initial.contribution_rgb)
     assert torch.equal(result.temporal.composite_rgb, result.initial.composite_rgb)
+    assert torch.equal(result.temporal_filtered.contribution_rgb, result.initial.contribution_rgb)
+    assert torch.equal(result.temporal_filtered.composite_rgb, result.initial.composite_rgb)
     assert torch.equal(result.temporal_reservoir.light_indices, result.initial_reservoir.light_indices)
     assert not bool(result.lookup.valid_mask.any())
+    assert not bool(result.temporal_filter_stats.alpha.any())
 
 
 def test_valid_history_accumulates_m_and_keeps_finite_weights() -> None:
@@ -62,6 +68,76 @@ def test_failing_temporal_gate_falls_back_to_initial() -> None:
     assert not bool(second.lookup.valid_mask.any())
     assert torch.equal(second.temporal.contribution_rgb, second.initial.contribution_rgb)
     assert torch.equal(second.temporal.composite_rgb, second.initial.composite_rgb)
+    assert torch.equal(second.temporal_filtered.contribution_rgb, second.initial.contribution_rgb)
+    assert torch.equal(second.temporal_filtered.composite_rgb, second.initial.composite_rgb)
+
+
+def test_temporal_filter_blends_valid_history_by_confidence() -> None:
+    gbuffer = make_gbuffer()
+    current = make_estimator_buffers(gbuffer, 0.2)
+    previous = make_estimator_buffers(gbuffer, 0.6)
+    settings = RestirRenderSettings(
+        temporal_filter_blend_max=0.25,
+        temporal_filter_clamp_scale=10.0,
+        temporal_filter_clamp_min=0.0,
+    )
+
+    filtered, stats = apply_confidence_clamped_temporal_filter(gbuffer, current, previous, make_lookup(), settings)
+
+    expected = torch.full_like(current.contribution_rgb, 0.3)
+    assert torch.allclose(filtered.contribution_rgb, expected)
+    assert torch.allclose(stats.alpha, torch.full_like(stats.alpha, 0.25))
+    assert torch.allclose(filtered.composite_rgb, gbuffer.rgb * settings.ambient + expected)
+
+
+def test_temporal_filter_confidence_reduces_alpha_near_thresholds() -> None:
+    gbuffer = make_gbuffer()
+    current = make_estimator_buffers(gbuffer, 0.2)
+    previous = make_estimator_buffers(gbuffer, 0.6)
+    settings = RestirRenderSettings(
+        temporal_filter_blend_max=0.15,
+        temporal_filter_clamp_scale=10.0,
+        temporal_filter_clamp_min=0.0,
+    )
+    lookup = make_lookup(relative_depth_error=0.025, normal_abs_dot=0.9, rgb_distance=0.1, motion=(16.0, 0.0))
+
+    _, stats = apply_confidence_clamped_temporal_filter(gbuffer, current, previous, lookup, settings)
+
+    assert torch.allclose(stats.alpha, torch.full_like(stats.alpha, 0.075))
+
+
+def test_temporal_filter_clamps_large_history_before_blending() -> None:
+    gbuffer = make_gbuffer()
+    current = make_estimator_buffers(gbuffer, 0.2)
+    previous = make_estimator_buffers(gbuffer, 2.0)
+    settings = RestirRenderSettings(
+        temporal_filter_blend_max=1.0,
+        temporal_filter_clamp_scale=0.5,
+        temporal_filter_clamp_min=0.0,
+    )
+
+    filtered, stats = apply_confidence_clamped_temporal_filter(gbuffer, current, previous, make_lookup(), settings)
+
+    assert torch.allclose(filtered.contribution_rgb, torch.full_like(current.contribution_rgb, 0.3))
+    assert torch.all(stats.clamp_delta > 0.0)
+
+
+def test_temporal_filter_rejected_history_matches_current_exactly() -> None:
+    gbuffer = make_gbuffer()
+    current = make_estimator_buffers(gbuffer, 0.2)
+    previous = make_estimator_buffers(gbuffer, 0.6)
+
+    filtered, stats = apply_confidence_clamped_temporal_filter(
+        gbuffer,
+        current,
+        previous,
+        make_lookup(valid=False),
+        RestirRenderSettings(temporal_filter_blend_max=1.0),
+    )
+
+    assert torch.equal(filtered.contribution_rgb, current.contribution_rgb)
+    assert torch.equal(filtered.composite_rgb, current.composite_rgb)
+    assert not bool(stats.alpha.any())
 
 
 def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
@@ -70,7 +146,7 @@ def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
 
     rows = make_restir_metric_rows("tiny_asset", result, settings)
 
-    assert len(rows) == 4
+    assert len(rows) == 6
     for row in rows:
         assert {
             "asset_id",
@@ -85,15 +161,40 @@ def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
             "valid_pixels",
             "pre_gate_pixels",
             "pre_gate_fraction",
+            "normal_gate_pass_pixels",
+            "normal_gate_pass_fraction",
+            "normal_gate_pass_pre_gate_fraction",
+            "rgb_gate_pass_pixels",
+            "rgb_gate_pass_fraction",
+            "rgb_gate_pass_pre_gate_fraction",
+            "motion_gate_pass_pixels",
+            "motion_gate_pass_fraction",
+            "motion_gate_pass_pre_gate_fraction",
             "reuse_pixels",
             "reuse_fraction",
             "mean_relative_depth_error",
             "mean_temporal_normal_dot",
+            "mean_temporal_normal_abs_dot",
             "mean_temporal_rgb_distance",
             "mean_motion_pixels",
+            "mean_pre_gate_normal_dot",
+            "mean_pre_gate_normal_abs_dot",
+            "mean_pre_gate_rgb_distance",
+            "mean_pre_gate_motion_pixels",
             "temporal_normal_threshold",
             "temporal_rgb_threshold",
             "temporal_max_motion_pixels",
+            "temporal_reprojection_search_radius",
+            "temporal_history_m_cap",
+            "temporal_filter_blend_max",
+            "temporal_filter_clamp_scale",
+            "temporal_filter_clamp_min",
+            "temporal_filter_confidence_mean",
+            "temporal_filter_alpha_mean",
+            "temporal_filter_alpha_max",
+            "temporal_filter_history_delta_mean",
+            "temporal_filter_clamp_delta_mean",
+            "visibility_shadow_pcf_radius",
             "reservoir_m_mean",
             "reservoir_m_max",
             "mae",
@@ -155,6 +256,8 @@ def test_visibility_target_uses_visibility_geometric_proposal_by_default() -> No
     rows = make_restir_metric_rows("tiny_asset", result, settings)
 
     assert {str(row["proposal"]) for row in rows} == {"visibility_geometric"}
+    assert {int(row["temporal_history_m_cap"]) for row in rows} == {settings.candidate_count}
+    assert {int(row["visibility_shadow_pcf_radius"]) for row in rows} == {1}
     assert all_numeric_finite(rows)
 
 
@@ -216,4 +319,38 @@ def make_shadow_bundle() -> ShadowMapBundle:
         alpha_maps=torch.zeros((2, 4, 4), dtype=torch.float32),
         scene_radius=1.0,
         depth_bias=0.0,
+    )
+
+
+def make_estimator_buffers(gbuffer: GBuffer, contribution_value: float) -> LightingEstimatorBuffers:
+    contribution = torch.full_like(gbuffer.rgb, contribution_value)
+    composite = gbuffer.rgb * 0.2 + contribution
+    return LightingEstimatorBuffers(
+        contribution_rgb=contribution,
+        composite_rgb=composite,
+        valid_mask=gbuffer.valid_mask & gbuffer.normal_mask,
+    )
+
+
+def make_lookup(
+    valid: bool = True,
+    relative_depth_error: float = 0.0,
+    normal_abs_dot: float = 1.0,
+    rgb_distance: float = 0.0,
+    motion: tuple[float, float] = (0.0, 0.0),
+) -> TemporalLookup:
+    ys, xs = torch.meshgrid(torch.arange(2, dtype=torch.long), torch.arange(2, dtype=torch.long), indexing="ij")
+    mask = torch.full((2, 2), valid, dtype=torch.bool)
+    return TemporalLookup(
+        prev_pixels=torch.stack((xs, ys), dim=-1),
+        valid_mask=mask,
+        pre_gate_mask=mask.clone(),
+        normal_pass_mask=mask.clone(),
+        rgb_pass_mask=mask.clone(),
+        motion_pass_mask=mask.clone(),
+        relative_depth_error=torch.full((2, 2), relative_depth_error, dtype=torch.float32),
+        normal_dot=torch.full((2, 2), normal_abs_dot, dtype=torch.float32),
+        normal_abs_dot=torch.full((2, 2), normal_abs_dot, dtype=torch.float32),
+        rgb_distance=torch.full((2, 2), rgb_distance, dtype=torch.float32),
+        motion_pixels=torch.tensor(motion, dtype=torch.float32).expand(2, 2, 2).clone(),
     )

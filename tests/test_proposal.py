@@ -4,7 +4,6 @@ import math
 
 import torch
 
-from restir_gs.eval.proposal_ablation import run_proposal_ablation, summarize_rows
 from restir_gs.lighting.deferred import PointLights
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.restir.initial import estimate_proposal_diffuse, estimate_ris_initial_diffuse, estimate_uniform_diffuse
@@ -13,23 +12,6 @@ from restir_gs.restir.proposal import (
     compute_geometric_proposal_distribution,
     sample_light_candidates_from_distribution,
 )
-
-
-REQUIRED_KEYS = {
-    "proposal",
-    "estimator",
-    "k",
-    "seed_index",
-    "candidate_seed",
-    "selection_seed",
-    "reference_quantity",
-    "mae",
-    "rmse",
-    "bias_r",
-    "bias_g",
-    "bias_b",
-    "mean_abs_bias",
-}
 
 
 def make_gbuffer(
@@ -167,29 +149,3 @@ def test_uniform_estimator_matches_uniform_proposal_mc() -> None:
     assert torch.allclose(uniform.diffuse_rgb, proposal_mc.diffuse_rgb)
     assert torch.allclose(uniform.composite_rgb, proposal_mc.composite_rgb)
 
-
-def test_run_proposal_ablation_row_count_schema_and_summary() -> None:
-    rgb = torch.ones((2, 2, 3), dtype=torch.float32)
-    position = torch.zeros((2, 2, 3), dtype=torch.float32)
-    normal = torch.zeros((2, 2, 3), dtype=torch.float32)
-    normal[..., 2] = 1.0
-    valid = torch.ones((2, 2), dtype=torch.bool)
-    gbuffer = make_gbuffer(rgb, position, normal, valid, valid)
-    lights = PointLights(
-        positions_cam=torch.tensor(
-            [[0.0, 0.0, 1.0], [0.0, 0.0, 2.0], [0.0, 0.0, 3.0], [0.0, 0.0, 4.0]],
-            dtype=torch.float32,
-        ),
-        colors=torch.ones((4, 3), dtype=torch.float32),
-        intensities=torch.ones((4,), dtype=torch.float32),
-    )
-
-    rows = run_proposal_ablation(gbuffer, lights, k_values=[1, 2], seed_count=2)
-    summary = summarize_rows(rows)
-
-    assert len(rows) == 2 * 2 * 2 * 2 * 2
-    assert len(summary) == 2 * 2 * 2 * 2
-    for row in rows:
-        assert REQUIRED_KEYS == set(row)
-        for key in ["mae", "rmse", "bias_r", "bias_g", "bias_b", "mean_abs_bias"]:
-            assert math.isfinite(float(row[key]))

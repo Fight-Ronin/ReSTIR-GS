@@ -122,6 +122,23 @@ def test_visibility_geometric_proposal_removes_blocked_light_mass() -> None:
     assert torch.allclose(visible, torch.tensor([[[1.0, 0.0]]], dtype=torch.float32))
 
 
+def test_visibility_geometric_proposal_uses_soft_pcf_visibility() -> None:
+    gbuffer = make_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    lights = make_two_lights()
+    shadow = make_shadow_bundle(depths=[10.0, 1.0], alphas=[0.0, 1.0], depth_bias=0.0)
+    shadow.depth_maps[1, 0, 0] = 3.0
+    shadow.depth_maps[1, 0, 1] = 3.0
+    shadow.depth_maps[1, 1, 0] = 3.0
+
+    geometric = compute_geometric_proposal_distribution(gbuffer, lights)
+    visible = compute_visibility_geometric_proposal_distribution(gbuffer, camera, lights, shadow, pcf_radius=1)
+    expected_weights = geometric * torch.tensor([[[1.0, 3.0 / 9.0]]], dtype=torch.float32)
+    expected = expected_weights / expected_weights.sum(dim=-1, keepdim=True)
+
+    assert torch.allclose(visible, expected)
+
+
 def test_visibility_geometric_proposal_falls_back_when_all_lights_blocked() -> None:
     gbuffer = make_gbuffer(position=(0.0, 0.0, 1.0))
     camera = make_identity_camera()

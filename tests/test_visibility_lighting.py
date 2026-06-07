@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from restir_gs.lighting.deferred import PointLights, shade_deferred_lambertian
 from restir_gs.lighting.visibility import (
@@ -49,6 +50,42 @@ def test_visibility_blocks_when_behind_opaque_shadow_depth() -> None:
     assert torch.allclose(visibility, torch.zeros((1, 1, 1)))
 
 
+def test_pcf_radius_zero_matches_hard_shadow_behavior() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_shadow_bundle(depth=1.0, alpha=1.0, depth_bias=0.01)
+
+    implicit_hard = evaluate_shadow_visibility(gbuffer, camera, shadow, torch.zeros((1, 1, 1), dtype=torch.long))
+    explicit_hard = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        torch.zeros((1, 1, 1), dtype=torch.long),
+        pcf_radius=0,
+    )
+
+    assert torch.allclose(explicit_hard, implicit_hard)
+
+
+def test_pcf_radius_one_averages_hard_shadow_samples() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_shadow_bundle(depth=1.0, alpha=1.0, depth_bias=0.0)
+    shadow.depth_maps[0, 0, 0] = 3.0
+    shadow.depth_maps[0, 0, 1] = 3.0
+    shadow.depth_maps[0, 1, 0] = 3.0
+
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        torch.zeros((1, 1, 1), dtype=torch.long),
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(visibility, torch.full((1, 1, 1), 3.0 / 9.0))
+
+
 def test_low_shadow_alpha_means_no_blocker() -> None:
     gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
     camera = make_identity_camera()
@@ -94,6 +131,15 @@ def test_all_visible_lambertian_matches_unshadowed_reference() -> None:
 
     assert torch.allclose(visible.diffuse_rgb, unshadowed.diffuse_rgb)
     assert torch.allclose(visible.composite_rgb, unshadowed.composite_rgb)
+
+
+def test_negative_pcf_radius_fails_loudly() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 1.0))
+    camera = make_identity_camera()
+    shadow = make_shadow_bundle(depth=2.0, alpha=1.0, depth_bias=0.1)
+
+    with pytest.raises(ValueError, match="pcf_radius"):
+        evaluate_shadow_visibility(gbuffer, camera, shadow, torch.zeros((1, 1, 1), dtype=torch.long), pcf_radius=-1)
 
 
 def make_single_pixel_gbuffer(position: tuple[float, float, float], valid: bool = True) -> GBuffer:

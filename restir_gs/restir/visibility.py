@@ -27,6 +27,7 @@ def estimate_visibility_proposal_lighting(
     samples: CandidateSamples,
     ambient: float = 0.2,
     alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
 ) -> VisibilityEstimatorBuffers:
@@ -39,6 +40,7 @@ def estimate_visibility_proposal_lighting(
         shadow_bundle,
         samples.light_indices,
         alpha_threshold=alpha_threshold,
+        pcf_radius=pcf_radius,
         two_sided=two_sided,
         distance_epsilon=distance_epsilon,
     )
@@ -64,6 +66,7 @@ def estimate_visibility_ris_initial_lighting(
     ambient: float = 0.2,
     proposal_probs: torch.Tensor | None = None,
     alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
 ) -> tuple[LightingEstimatorBuffers, ReservoirState]:
@@ -82,6 +85,7 @@ def estimate_visibility_ris_initial_lighting(
         shadow_bundle,
         candidates,
         alpha_threshold=alpha_threshold,
+        pcf_radius=pcf_radius,
         two_sided=two_sided,
         distance_epsilon=distance_epsilon,
     )

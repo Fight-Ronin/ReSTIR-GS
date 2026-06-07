@@ -30,7 +30,7 @@ from restir_gs.render.aligned_asset_registry import (
     resolve_aligned_asset_paths,
 )
 from restir_gs.render.camera_probe import load_camera_config
-from restir_gs.render.dxgl_asset import load_dxgl_aligned_asset, scale_camera
+from restir_gs.render.dxgl_asset import scale_camera
 from restir_gs.render.gbuffer import GBuffer, make_pseudo_gbuffer
 from restir_gs.render.gsplat_renderer import render_rgbd
 from restir_gs.render.orbit_camera import (
@@ -52,8 +52,6 @@ from restir_gs.restir.proposal import (
     sample_light_candidates_from_distribution,
 )
 from restir_gs.restir.visibility import estimate_visibility_proposal_lighting, estimate_visibility_ris_initial_lighting
-from scripts.download_dxgl_apple import DEFAULT_EXTRACT_DIR, find_dxgl_dataset_root, validate_dxgl_dataset_root
-from scripts.download_dxgl_apple_splat import DEFAULT_SPLAT_PATH, validate_dxgl_splat_file
 
 
 DEFAULT_OUTPUT_DIR = Path("outputs/interactive_viewer")
@@ -165,6 +163,7 @@ def render_view(
     visibility_candidate_seed: int,
     visibility_selection_seed: int,
     visibility_shadow_alpha_threshold: float,
+    visibility_shadow_pcf_radius: int,
     device: torch.device,
 ) -> ViewerRenderResult:
     camera = orbit_state_to_camera(state, device=device)
@@ -217,6 +216,7 @@ def render_view(
                 visibility_cache.shadow_bundle,
                 ambient=ambient,
                 alpha_threshold=visibility_shadow_alpha_threshold,
+                pcf_radius=visibility_shadow_pcf_radius,
             )
             visibility_proposal = compute_visibility_geometric_proposal_distribution(
                 gbuffer,
@@ -224,6 +224,7 @@ def render_view(
                 visibility_lights,
                 visibility_cache.shadow_bundle,
                 alpha_threshold=visibility_shadow_alpha_threshold,
+                pcf_radius=visibility_shadow_pcf_radius,
             )
             visibility_samples = sample_light_candidates_from_distribution(
                 visibility_proposal,
@@ -239,6 +240,7 @@ def render_view(
                 visibility_samples,
                 ambient=ambient,
                 alpha_threshold=visibility_shadow_alpha_threshold,
+                pcf_radius=visibility_shadow_pcf_radius,
             )
             visibility_ris, _ = estimate_visibility_ris_initial_lighting(
                 gbuffer,
@@ -250,6 +252,7 @@ def render_view(
                 selection_seed=visibility_selection_seed,
                 ambient=ambient,
                 alpha_threshold=visibility_shadow_alpha_threshold,
+                pcf_radius=visibility_shadow_pcf_radius,
             )
             visibility_error = torch.abs(visibility_ris.contribution_rgb - visibility_reference.diffuse_rgb).mean(dim=-1)
             visibility_result = ViewerVisibilityResult(
@@ -428,6 +431,7 @@ class InteractiveViewer:
             visibility_candidate_seed=self.args.visibility_candidate_seed,
             visibility_selection_seed=self.args.visibility_selection_seed,
             visibility_shadow_alpha_threshold=self.args.visibility_shadow_alpha_threshold,
+            visibility_shadow_pcf_radius=self.args.visibility_shadow_pcf_radius,
             device=self.device,
         )
 
@@ -575,9 +579,7 @@ class InteractiveViewer:
 def load_viewer_asset(args: argparse.Namespace, device: torch.device) -> ViewerAsset:
     if args.ply is not None:
         return load_generic_ply_viewer_asset(args, device=device)
-    if args.asset_id is not None:
-        return load_registered_viewer_asset(args, device=device)
-    return load_dxgl_viewer_asset(args, device=device)
+    return load_registered_viewer_asset(args, device=device)
 
 
 def load_registered_viewer_asset(args: argparse.Namespace, device: torch.device) -> ViewerAsset:
@@ -600,34 +602,6 @@ def load_registered_viewer_asset(args: argparse.Namespace, device: torch.device)
             "splat_path": str(resolved.splat_path),
             "original_count": asset.loaded.stats.original_count,
             "loaded_count": asset.loaded.stats.loaded_count,
-        },
-    )
-
-
-def load_dxgl_viewer_asset(args: argparse.Namespace, device: torch.device) -> ViewerAsset:
-    dataset_root = find_dxgl_dataset_root(args.dataset_root, required=True)
-    validate_dxgl_dataset_root(dataset_root, raise_on_missing=True)
-    validate_dxgl_splat_file(args.splat)
-    max_gaussians = None if args.max_gaussians <= 0 else args.max_gaussians
-    dxgl = load_dxgl_aligned_asset(
-        dataset_root,
-        args.splat,
-        device=device,
-        max_gaussians=max_gaussians,
-        normalization_bbox_percentile=args.normalization_bbox_percentile,
-    )
-    return ViewerAsset(
-        label="DXGL Apple",
-        scene=dxgl.loaded.scene,
-        source_path=Path(dxgl.splat_path),
-        frame_cameras=[frame.camera for frame in dxgl.transforms.frames],
-        frame_labels=[str(frame.index) for frame in dxgl.transforms.frames],
-        metadata={
-            "source_mode": "dxgl_aligned",
-            "dataset_root": str(dxgl.dataset_root),
-            "splat_path": str(dxgl.splat_path),
-            "original_count": dxgl.loaded.stats.original_count,
-            "loaded_count": dxgl.loaded.stats.loaded_count,
         },
     )
 
@@ -717,6 +691,7 @@ def _save_metadata(args: argparse.Namespace, result: ViewerRenderResult, asset: 
         "visibility_shadow_resolution": args.visibility_shadow_resolution,
         "visibility_shadow_bias_scale": args.visibility_shadow_bias_scale,
         "visibility_shadow_alpha_threshold": args.visibility_shadow_alpha_threshold,
+        "visibility_shadow_pcf_radius": args.visibility_shadow_pcf_radius,
         "ambient": args.ambient,
         "specular_strength": args.specular_strength,
         "shininess": args.shininess,
@@ -755,17 +730,14 @@ def configure_viewer_runtime_environment(device: torch.device) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Open a lightweight interactive 3DGS viewer.")
-    parser.add_argument("--ply", type=Path, default=None, help="Generic compatible 3DGS PLY to view. Omit to use DXGL Apple.")
+    parser.add_argument("--ply", type=Path, default=None, help="Generic compatible 3DGS PLY to view. Omit to use a registered aligned asset.")
     parser.add_argument("--camera-config", type=Path, default=None, help="Optional camera config for --ply mode.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
-    parser.add_argument("--asset-id", default=None, help="Registered aligned asset id to view. Ignored when --ply is provided.")
-    parser.add_argument("--dataset-root", type=Path, default=DEFAULT_EXTRACT_DIR)
-    parser.add_argument("--splat", type=Path, default=DEFAULT_SPLAT_PATH)
+    parser.add_argument("--asset-id", default="dxgl_apple", help="Registered aligned asset id to view. Ignored when --ply is provided.")
     parser.add_argument("--frame-index", type=int, default=None)
     parser.add_argument("--width", type=int, default=256)
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--max-gaussians", type=int, default=0)
-    parser.add_argument("--normalization-bbox-percentile", type=float, default=0.98)
     parser.add_argument("--auto-camera-bbox-percentile", type=float, default=0.98)
     parser.add_argument("--auto-camera-radius-scale", type=float, default=1.8)
     parser.add_argument("--num-lights", type=int, default=128)
@@ -781,6 +753,7 @@ def main() -> int:
     parser.add_argument("--visibility-shadow-resolution", type=int, default=128)
     parser.add_argument("--visibility-shadow-bias-scale", type=float, default=0.02)
     parser.add_argument("--visibility-shadow-alpha-threshold", type=float, default=1e-4)
+    parser.add_argument("--visibility-shadow-pcf-radius", type=int, default=1)
     parser.add_argument("--ambient", type=float, default=0.2)
     parser.add_argument("--specular-strength", type=float, default=0.15)
     parser.add_argument("--shininess", type=float, default=24.0)
@@ -800,6 +773,8 @@ def main() -> int:
         raise ValueError(f"Expected positive visibility_shadow_resolution, got {args.visibility_shadow_resolution}")
     if args.visibility_shadow_bias_scale < 0.0 or args.visibility_shadow_alpha_threshold < 0.0:
         raise ValueError("Expected non-negative visibility shadow bias scale and alpha threshold.")
+    if args.visibility_shadow_pcf_radius < 0:
+        raise ValueError(f"Expected non-negative visibility_shadow_pcf_radius, got {args.visibility_shadow_pcf_radius}")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is False.")
     device = torch.device(args.device)
@@ -839,6 +814,7 @@ def main() -> int:
             visibility_candidate_seed=args.visibility_candidate_seed,
             visibility_selection_seed=args.visibility_selection_seed,
             visibility_shadow_alpha_threshold=args.visibility_shadow_alpha_threshold,
+            visibility_shadow_pcf_radius=args.visibility_shadow_pcf_radius,
             device=device,
         )
         paths = save_outputs(result, args.output_dir, metadata=_save_metadata(args, result, asset))

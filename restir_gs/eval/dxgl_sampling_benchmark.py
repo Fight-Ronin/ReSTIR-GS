@@ -6,8 +6,8 @@ from collections.abc import Iterable
 import torch
 
 from restir_gs.eval.gbuffer_validation import binary_mask_metrics, masked_rgb_metrics
-from restir_gs.eval.ris_ablation import compute_error_metrics
 from restir_gs.lighting.deferred import LightingBuffers, PointLights
+from restir_gs.metrics import compute_rgb_error_metrics
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.restir.initial import (
     LightingEstimatorBuffers,
@@ -264,7 +264,7 @@ def _make_sampling_rows(
             "rgb_mae_to_reference": float(rgb_mae_to_reference),
             "alpha_iou": float(alpha_iou),
         }
-        row.update(compute_error_metrics(estimate_tensor, reference_tensor, valid_mask))
+        row.update(compute_rgb_error_metrics(estimate_tensor, reference_tensor, valid_mask))
         rows.append(row)
     return rows
 

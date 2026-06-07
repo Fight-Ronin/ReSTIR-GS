@@ -65,6 +65,18 @@ def parse_optional_float(text: str) -> float | None:
         raise argparse.ArgumentTypeError(f"Expected a float or 'none', got {text!r}") from exc
 
 
+def parse_optional_int(text: str) -> int | None:
+    if text.strip().lower() == "none":
+        return None
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Expected an int or 'none', got {text!r}") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"Expected a positive int or 'none', got {text!r}")
+    return value
+
+
 def to_u8_rgb(rgb: torch.Tensor) -> np.ndarray:
     return (rgb.detach().cpu().clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8)
 
@@ -109,18 +121,38 @@ def save_final_previews(output_dir: Path, result) -> dict[str, str]:
         "reference": output_dir / "final_reference.png",
         "initial_ris": output_dir / "final_initial_ris.png",
         "temporal_ris": output_dir / "final_temporal_ris.png",
+        "temporal_filtered_ris": output_dir / "final_temporal_filtered_ris.png",
+        "pre_gate_mask": output_dir / "final_pre_gate_mask.png",
+        "normal_reject_mask": output_dir / "final_normal_reject_mask.png",
+        "rgb_reject_mask": output_dir / "final_rgb_reject_mask.png",
+        "motion_reject_mask": output_dir / "final_motion_reject_mask.png",
         "reuse_mask": output_dir / "final_reuse_mask.png",
         "motion_magnitude": output_dir / "final_motion_magnitude.png",
+        "temporal_filter_alpha": output_dir / "final_temporal_filter_alpha.png",
         "initial_abs_error": output_dir / "final_initial_abs_error.png",
         "temporal_abs_error": output_dir / "final_temporal_abs_error.png",
+        "temporal_filtered_abs_error": output_dir / "final_temporal_filtered_abs_error.png",
     }
+    normal_reject = result.lookup.pre_gate_mask & ~result.lookup.normal_pass_mask
+    rgb_reject = result.lookup.pre_gate_mask & result.lookup.normal_pass_mask & ~result.lookup.rgb_pass_mask
+    motion_reject = result.lookup.pre_gate_mask & result.lookup.normal_pass_mask & result.lookup.rgb_pass_mask & ~result.lookup.motion_pass_mask
     imageio.imwrite(paths["reference"], to_u8_rgb(result.reference.composite_rgb))
     imageio.imwrite(paths["initial_ris"], to_u8_rgb(result.initial.composite_rgb))
     imageio.imwrite(paths["temporal_ris"], to_u8_rgb(result.temporal.composite_rgb))
+    imageio.imwrite(paths["temporal_filtered_ris"], to_u8_rgb(result.temporal_filtered.composite_rgb))
+    imageio.imwrite(paths["pre_gate_mask"], to_u8_mask(result.lookup.pre_gate_mask))
+    imageio.imwrite(paths["normal_reject_mask"], to_u8_mask(normal_reject))
+    imageio.imwrite(paths["rgb_reject_mask"], to_u8_mask(rgb_reject))
+    imageio.imwrite(paths["motion_reject_mask"], to_u8_mask(motion_reject))
     imageio.imwrite(paths["reuse_mask"], to_u8_mask(result.lookup.valid_mask))
     imageio.imwrite(paths["motion_magnitude"], to_u8_scalar(torch.linalg.norm(result.lookup.motion_pixels, dim=-1), result.lookup.valid_mask))
+    imageio.imwrite(paths["temporal_filter_alpha"], to_u8_scalar(result.temporal_filter_stats.alpha, result.reference.valid_mask))
     imageio.imwrite(paths["initial_abs_error"], make_abs_error_image(result.initial.contribution_rgb, result.reference.diffuse_rgb, result.reference.valid_mask))
     imageio.imwrite(paths["temporal_abs_error"], make_abs_error_image(result.temporal.contribution_rgb, result.reference.diffuse_rgb, result.reference.valid_mask))
+    imageio.imwrite(
+        paths["temporal_filtered_abs_error"],
+        make_abs_error_image(result.temporal_filtered.contribution_rgb, result.reference.diffuse_rgb, result.reference.valid_mask),
+    )
     return {key: str(path) for key, path in paths.items()}
 
 
@@ -129,7 +161,7 @@ def make_contact_sheet(records: list[dict[str, Any]], output_path: Path) -> None
     cell_h = 132
     label_w = 182
     header_h = 34
-    labels = ["Reference", "Initial RIS", "Temporal RIS", "Reuse Mask", "Initial Error", "Temporal Error"]
+    labels = ["Reference", "Initial RIS", "Temporal Filtered", "Reuse Mask", "Initial Error", "Filtered Error"]
     sheet = Image.new("RGB", (label_w + len(labels) * cell_w, header_h + max(len(records), 1) * cell_h), "white")
     draw = ImageDraw.Draw(sheet)
     draw.text((8, 9), "Aligned ReSTIR renderer path", fill=(0, 0, 0))
@@ -140,7 +172,7 @@ def make_contact_sheet(records: list[dict[str, Any]], output_path: Path) -> None
             f"{record['asset_id']}\nframe {record['frame_index']}\n"
             f"reuse={record['reuse_fraction']:.3f}\n"
             f"init={record['initial_mae']:.4f}\n"
-            f"temp={record['temporal_mae']:.4f}",
+            f"filt={record['filtered_mae']:.4f}",
             fill=(0, 0, 0),
         )
         for col, label in enumerate(labels):
@@ -182,9 +214,15 @@ def main() -> int:
     parser.add_argument("--temporal-normal-threshold", type=parse_optional_float, default=0.85)
     parser.add_argument("--temporal-rgb-threshold", type=parse_optional_float, default=0.20)
     parser.add_argument("--temporal-max-motion-pixels", type=parse_optional_float, default=32.0)
+    parser.add_argument("--temporal-reprojection-search-radius", type=int, default=1)
+    parser.add_argument("--temporal-history-m-cap", type=parse_optional_int, default=1)
+    parser.add_argument("--temporal-filter-blend-max", type=float, default=0.15)
+    parser.add_argument("--temporal-filter-clamp-scale", type=float, default=0.50)
+    parser.add_argument("--temporal-filter-clamp-min", type=float, default=1e-5)
     parser.add_argument("--visibility-shadow-resolution", type=int, default=128)
     parser.add_argument("--visibility-shadow-bias-scale", type=float, default=0.02)
     parser.add_argument("--visibility-shadow-alpha-threshold", type=float, default=1e-4)
+    parser.add_argument("--visibility-shadow-pcf-radius", type=int, default=1)
     parser.add_argument("--ambient", type=float, default=0.2)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--device", default="cuda")
@@ -208,10 +246,16 @@ def main() -> int:
         temporal_normal_threshold=args.temporal_normal_threshold,
         temporal_rgb_threshold=args.temporal_rgb_threshold,
         temporal_max_motion_pixels=args.temporal_max_motion_pixels,
+        temporal_reprojection_search_radius=args.temporal_reprojection_search_radius,
+        temporal_history_m_cap=args.temporal_history_m_cap,
+        temporal_filter_blend_max=args.temporal_filter_blend_max,
+        temporal_filter_clamp_scale=args.temporal_filter_clamp_scale,
+        temporal_filter_clamp_min=args.temporal_filter_clamp_min,
         ambient=args.ambient,
         visibility_shadow_resolution=args.visibility_shadow_resolution,
         visibility_shadow_bias_scale=args.visibility_shadow_bias_scale,
         visibility_shadow_alpha_threshold=args.visibility_shadow_alpha_threshold,
+        visibility_shadow_pcf_radius=args.visibility_shadow_pcf_radius,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -250,6 +294,7 @@ def main() -> int:
         contact_records: list[dict[str, Any]] = []
         frame_records: list[dict[str, Any]] = []
         first_frame_temporal_equals_initial = False
+        first_frame_filtered_equals_initial = False
         last_result = None
         for offset, frame_index in enumerate(frame_indices):
             frame = asset.transforms.frames[frame_index]
@@ -276,16 +321,27 @@ def main() -> int:
                     torch.allclose(result.temporal.contribution_rgb, result.initial.contribution_rgb)
                     and torch.allclose(result.temporal.composite_rgb, result.initial.composite_rgb)
                 )
+                first_frame_filtered_equals_initial = bool(
+                    torch.allclose(result.temporal_filtered.contribution_rgb, result.initial.contribution_rgb)
+                    and torch.allclose(result.temporal_filtered.composite_rgb, result.initial.composite_rgb)
+                )
             frame_records.append(
                 {
                     "frame_index": frame_index,
                     "valid_pixels": int(result.reference.valid_mask.sum().detach().cpu()),
                     "pre_gate_pixels": int(result.lookup.pre_gate_mask.sum().detach().cpu()),
+                    "normal_gate_pass_pixels": int(result.lookup.normal_pass_mask.sum().detach().cpu()),
+                    "rgb_gate_pass_pixels": int(result.lookup.rgb_pass_mask.sum().detach().cpu()),
+                    "motion_gate_pass_pixels": int(result.lookup.motion_pass_mask.sum().detach().cpu()),
                     "reuse_pixels": int(result.lookup.valid_mask.sum().detach().cpu()),
                     "reuse_fraction": reuse_fraction,
                     "initial_contribution_mae": contribution_rows["initial_ris"]["mae"],
                     "temporal_contribution_mae": contribution_rows["temporal_ris"]["mae"],
+                    "temporal_filtered_contribution_mae": contribution_rows["temporal_filtered_ris"]["mae"],
                     "temporal_m_mean": contribution_rows["temporal_ris"]["reservoir_m_mean"],
+                    "temporal_filter_confidence_mean": contribution_rows["temporal_filtered_ris"]["temporal_filter_confidence_mean"],
+                    "temporal_filter_alpha_mean": contribution_rows["temporal_filtered_ris"]["temporal_filter_alpha_mean"],
+                    "temporal_filter_alpha_max": contribution_rows["temporal_filtered_ris"]["temporal_filter_alpha_max"],
                 }
             )
             contact_records.append(
@@ -295,16 +351,21 @@ def main() -> int:
                     "reuse_fraction": reuse_fraction,
                     "initial_mae": float(contribution_rows["initial_ris"]["mae"]),
                     "temporal_mae": float(contribution_rows["temporal_ris"]["mae"]),
+                    "filtered_mae": float(contribution_rows["temporal_filtered_ris"]["mae"]),
                     "images": {
                         "Reference": Image.fromarray(to_u8_rgb(result.reference.composite_rgb)),
                         "Initial RIS": Image.fromarray(to_u8_rgb(result.initial.composite_rgb)),
-                        "Temporal RIS": Image.fromarray(to_u8_rgb(result.temporal.composite_rgb)),
+                        "Temporal Filtered": Image.fromarray(to_u8_rgb(result.temporal_filtered.composite_rgb)),
                         "Reuse Mask": Image.fromarray(to_u8_mask(result.lookup.valid_mask)).convert("RGB"),
                         "Initial Error": Image.fromarray(
                             make_abs_error_image(result.initial.contribution_rgb, result.reference.diffuse_rgb, result.reference.valid_mask)
                         ).convert("RGB"),
-                        "Temporal Error": Image.fromarray(
-                            make_abs_error_image(result.temporal.contribution_rgb, result.reference.diffuse_rgb, result.reference.valid_mask)
+                        "Filtered Error": Image.fromarray(
+                            make_abs_error_image(
+                                result.temporal_filtered.contribution_rgb,
+                                result.reference.diffuse_rgb,
+                                result.reference.valid_mask,
+                            )
                         ).convert("RGB"),
                     },
                 }
@@ -327,6 +388,7 @@ def main() -> int:
                 "original_count": asset.loaded.stats.original_count,
                 "frame_indices": frame_indices,
                 "first_frame_temporal_equals_initial": first_frame_temporal_equals_initial,
+                "first_frame_filtered_equals_initial": first_frame_filtered_equals_initial,
                 "light_info": light_info,
                 "frames": frame_records,
                 "outputs": {
@@ -359,12 +421,18 @@ def main() -> int:
             "temporal_normal_threshold": args.temporal_normal_threshold,
             "temporal_rgb_threshold": args.temporal_rgb_threshold,
             "temporal_max_motion_pixels": args.temporal_max_motion_pixels,
+            "temporal_reprojection_search_radius": args.temporal_reprojection_search_radius,
+            "temporal_history_m_cap": args.temporal_history_m_cap if args.temporal_history_m_cap is not None else args.candidate_count,
+            "temporal_filter_blend_max": args.temporal_filter_blend_max,
+            "temporal_filter_clamp_scale": args.temporal_filter_clamp_scale,
+            "temporal_filter_clamp_min": args.temporal_filter_clamp_min,
             "ambient": args.ambient,
             "target_mode": args.target_mode,
             "proposal": "visibility_geometric" if args.target_mode == "visibility" else "geometric",
             "visibility_shadow_resolution": args.visibility_shadow_resolution,
             "visibility_shadow_bias_scale": args.visibility_shadow_bias_scale,
             "visibility_shadow_alpha_threshold": args.visibility_shadow_alpha_threshold,
+            "visibility_shadow_pcf_radius": args.visibility_shadow_pcf_radius,
         },
         "row_count": len(rows),
         "all_numeric_finite": all_numeric_finite(rows),

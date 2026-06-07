@@ -16,7 +16,7 @@ from restir_gs.render.aligned_asset_registry import (
     resolve_aligned_asset_paths,
     resolve_requested_asset_ids,
 )
-from scripts.download_dxgl_apple import download_dxgl_zip, extract_dxgl_zip, validate_dxgl_dataset_root
+from scripts._dxgl_download import download_dxgl_zip, extract_dxgl_zip, validate_dxgl_dataset_root
 
 
 def main() -> int:

@@ -27,8 +27,12 @@ def test_identity_reprojection_maps_pixels_to_themselves() -> None:
     assert torch.equal(lookup.prev_pixels[..., 1], ys)
     assert torch.equal(lookup.valid_mask, torch.ones((2, 3), dtype=torch.bool))
     assert torch.equal(lookup.pre_gate_mask, torch.ones((2, 3), dtype=torch.bool))
+    assert torch.equal(lookup.normal_pass_mask, torch.ones((2, 3), dtype=torch.bool))
+    assert torch.equal(lookup.rgb_pass_mask, torch.ones((2, 3), dtype=torch.bool))
+    assert torch.equal(lookup.motion_pass_mask, torch.ones((2, 3), dtype=torch.bool))
     assert torch.allclose(lookup.relative_depth_error, torch.zeros((2, 3)))
     assert torch.allclose(lookup.normal_dot, torch.ones((2, 3)))
+    assert torch.allclose(lookup.normal_abs_dot, torch.ones((2, 3)))
     assert torch.allclose(lookup.rgb_distance, torch.zeros((2, 3)))
 
 
@@ -41,6 +45,9 @@ def test_depth_mismatch_rejects_history_reuse() -> None:
 
     assert not bool(lookup.valid_mask.any())
     assert not bool(lookup.pre_gate_mask.any())
+    assert not bool(lookup.normal_pass_mask.any())
+    assert not bool(lookup.rgb_pass_mask.any())
+    assert not bool(lookup.motion_pass_mask.any())
     assert bool(torch.isinf(lookup.relative_depth_error).all())
 
 
@@ -50,14 +57,28 @@ def test_invalid_previous_pixels_reject_history_reuse() -> None:
     previous.valid_mask[0, 0] = False
     camera = make_camera(width=2, height=2)
 
-    lookup = reproject_current_to_previous(current, camera, previous, camera)
+    lookup = reproject_current_to_previous(current, camera, previous, camera, search_radius=0)
 
     assert not bool(lookup.valid_mask[0, 0])
     assert not bool(lookup.pre_gate_mask[0, 0])
     assert bool(lookup.valid_mask[0, 1])
 
 
-def test_normal_mismatch_rejects_history_after_pre_gate() -> None:
+def test_neighborhood_search_repairs_invalid_nearest_previous_pixel() -> None:
+    current = make_projective_gbuffer(width=2, height=1, depth=2.0)
+    previous = make_projective_gbuffer(width=2, height=1, depth=2.0)
+    previous.valid_mask[0, 0] = False
+    camera = make_camera(width=2, height=1)
+
+    lookup = reproject_current_to_previous(current, camera, previous, camera, search_radius=1)
+
+    assert bool(lookup.valid_mask[0, 0])
+    assert bool(lookup.pre_gate_mask[0, 0])
+    assert int(lookup.prev_pixels[0, 0, 0]) == 1
+    assert int(lookup.prev_pixels[0, 0, 1]) == 0
+
+
+def test_perpendicular_normal_rejects_history_after_pre_gate() -> None:
     current = make_projective_gbuffer(width=2, height=2, depth=2.0)
     previous = make_projective_gbuffer(width=2, height=2, depth=2.0, normal=(1.0, 0.0, 0.0))
     camera = make_camera(width=2, height=2)
@@ -66,7 +87,25 @@ def test_normal_mismatch_rejects_history_after_pre_gate() -> None:
 
     assert bool(lookup.pre_gate_mask.all())
     assert not bool(lookup.valid_mask.any())
+    assert not bool(lookup.normal_pass_mask.any())
+    assert bool(lookup.rgb_pass_mask.all())
+    assert bool(lookup.motion_pass_mask.all())
     assert torch.allclose(lookup.normal_dot, torch.zeros((2, 2)))
+    assert torch.allclose(lookup.normal_abs_dot, torch.zeros((2, 2)))
+
+
+def test_reversed_normal_passes_unoriented_normal_gate() -> None:
+    current = make_projective_gbuffer(width=2, height=2, depth=2.0)
+    previous = make_projective_gbuffer(width=2, height=2, depth=2.0, normal=(0.0, 0.0, -1.0))
+    camera = make_camera(width=2, height=2)
+
+    lookup = reproject_current_to_previous(current, camera, previous, camera, normal_threshold=0.85)
+
+    assert bool(lookup.pre_gate_mask.all())
+    assert bool(lookup.normal_pass_mask.all())
+    assert bool(lookup.valid_mask.all())
+    assert torch.allclose(lookup.normal_dot, -torch.ones((2, 2)))
+    assert torch.allclose(lookup.normal_abs_dot, torch.ones((2, 2)))
 
 
 def test_rgb_mismatch_rejects_history_after_pre_gate() -> None:
@@ -79,6 +118,9 @@ def test_rgb_mismatch_rejects_history_after_pre_gate() -> None:
 
     assert bool(lookup.pre_gate_mask.all())
     assert not bool(lookup.valid_mask.any())
+    assert bool(lookup.normal_pass_mask.all())
+    assert not bool(lookup.rgb_pass_mask.any())
+    assert bool(lookup.motion_pass_mask.all())
     assert torch.allclose(lookup.rgb_distance, torch.ones((2, 2)))
 
 
@@ -107,6 +149,9 @@ def test_large_motion_rejects_history_when_motion_cap_enabled() -> None:
 
     assert bool(lookup.pre_gate_mask.any())
     assert not bool(lookup.valid_mask.any())
+    assert bool(lookup.normal_pass_mask.any())
+    assert bool(lookup.rgb_pass_mask.any())
+    assert not bool(lookup.motion_pass_mask.any())
 
 
 def test_disabled_optional_gates_preserve_depth_only_behavior() -> None:
@@ -126,6 +171,9 @@ def test_disabled_optional_gates_preserve_depth_only_behavior() -> None:
 
     assert bool(lookup.pre_gate_mask.all())
     assert bool(lookup.valid_mask.all())
+    assert bool(lookup.normal_pass_mask.all())
+    assert bool(lookup.rgb_pass_mask.all())
+    assert bool(lookup.motion_pass_mask.all())
 
 
 def test_no_valid_history_matches_current_initial_output_exactly() -> None:
@@ -183,6 +231,64 @@ def test_valid_history_accumulates_m_and_produces_finite_w() -> None:
     assert bool(reservoir.valid_mask.item())
     assert torch.isfinite(reservoir.W).all()
     assert torch.isfinite(buffers.contribution_rgb).all()
+
+
+def test_history_m_cap_clamps_effective_previous_m() -> None:
+    gbuffer = make_single_pixel_gbuffer(valid=True)
+    lights = make_two_lights()
+    current_buffers = LightingEstimatorBuffers(
+        contribution_rgb=torch.zeros((1, 1, 3)),
+        composite_rgb=gbuffer.rgb.clone(),
+        valid_mask=torch.ones((1, 1), dtype=torch.bool),
+    )
+    current = make_temporal_reservoir(light=0, W=1.0, M=8, valid=True)
+    previous = make_temporal_reservoir(light=1, W=1.0, M=16, valid=True)
+    lookup = make_lookup(valid=True)
+
+    buffers, reservoir = combine_temporal_reservoirs(
+        gbuffer,
+        lights,
+        current_buffers,
+        current,
+        previous,
+        lookup,
+        selection_seed=11,
+        history_m_cap=8,
+    )
+
+    assert reservoir.M.item() == 16
+    assert bool(reservoir.valid_mask.item())
+    assert torch.isfinite(reservoir.W).all()
+    assert torch.isfinite(buffers.contribution_rgb).all()
+
+
+def test_invalid_history_m_cap_fails_loudly() -> None:
+    gbuffer = make_single_pixel_gbuffer(valid=True)
+    lights = make_two_lights()
+    current_buffers = LightingEstimatorBuffers(
+        contribution_rgb=torch.zeros((1, 1, 3)),
+        composite_rgb=gbuffer.rgb.clone(),
+        valid_mask=torch.ones((1, 1), dtype=torch.bool),
+    )
+    current = make_temporal_reservoir(light=0, W=1.0, M=8, valid=True)
+    previous = make_temporal_reservoir(light=1, W=1.0, M=16, valid=True)
+    lookup = make_lookup(valid=True)
+
+    try:
+        combine_temporal_reservoirs(
+            gbuffer,
+            lights,
+            current_buffers,
+            current,
+            previous,
+            lookup,
+            selection_seed=11,
+            history_m_cap=0,
+        )
+    except ValueError as exc:
+        assert "history_m_cap" in str(exc)
+    else:
+        raise AssertionError("Expected invalid history_m_cap to fail.")
 
 
 def test_history_light_is_reevaluated_at_current_pixel() -> None:
@@ -380,8 +486,12 @@ def make_lookup(valid: bool) -> TemporalLookup:
         prev_pixels=torch.zeros((1, 1, 2), dtype=torch.long),
         valid_mask=torch.tensor([[valid]], dtype=torch.bool),
         pre_gate_mask=torch.tensor([[valid]], dtype=torch.bool),
+        normal_pass_mask=torch.tensor([[valid]], dtype=torch.bool),
+        rgb_pass_mask=torch.tensor([[valid]], dtype=torch.bool),
+        motion_pass_mask=torch.tensor([[valid]], dtype=torch.bool),
         relative_depth_error=torch.zeros((1, 1), dtype=torch.float32),
         normal_dot=torch.ones((1, 1), dtype=torch.float32) if valid else torch.zeros((1, 1), dtype=torch.float32),
+        normal_abs_dot=torch.ones((1, 1), dtype=torch.float32) if valid else torch.zeros((1, 1), dtype=torch.float32),
         rgb_distance=torch.zeros((1, 1), dtype=torch.float32) if valid else torch.full((1, 1), float("inf")),
         motion_pixels=torch.zeros((1, 1, 2), dtype=torch.float32),
     )

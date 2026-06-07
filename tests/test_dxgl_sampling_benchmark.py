@@ -11,7 +11,6 @@ from restir_gs.eval.dxgl_sampling_benchmark import (
     select_evenly_spaced_frames,
     summarize_sampling_rows,
 )
-from restir_gs.eval.proposal_ablation import run_proposal_ablation
 from restir_gs.lighting.deferred import PointLights, shade_deferred_blinn_phong, shade_deferred_lambertian
 from restir_gs.render.gbuffer import GBuffer
 
@@ -92,37 +91,6 @@ def test_sampling_row_count_schema_and_finite_summary() -> None:
         } == set(row)
         for key in ["mae", "rmse", "bias_r", "bias_g", "bias_b", "mean_abs_bias"]:
             assert math.isfinite(float(row[key]))
-
-
-def test_diffuse_target_rows_match_existing_proposal_ablation() -> None:
-    gbuffer = make_gbuffer()
-    lights = make_lights()
-    lambertian = shade_deferred_lambertian(gbuffer, lights)
-    blinn = shade_deferred_blinn_phong(gbuffer, lights)
-
-    old_rows = run_proposal_ablation(gbuffer, lights, k_values=[1, 2], seed_count=2, candidate_seed_base=15100, selection_seed_base=16100)
-    new_rows = run_sampling_benchmark_for_frame(
-        gbuffer,
-        lights,
-        lambertian,
-        blinn,
-        frame_index=0,
-        k_values=[1, 2],
-        seed_count=2,
-        candidate_seed_base=15100,
-        selection_seed_base=16100,
-    )
-    diffuse_rows = [row for row in new_rows if row["target_mode"] == "diffuse"]
-
-    def key(row: dict[str, int | float | str]) -> tuple[str, str, int, int, str]:
-        quantity = "diffuse_rgb" if row["reference_quantity"] == "contribution_rgb" else str(row["reference_quantity"])
-        return (str(row["proposal"]), str(row["estimator"]), int(row["k"]), int(row["seed_index"]), quantity)
-
-    old_by_key = {key(row): row for row in old_rows}
-    for row in diffuse_rows:
-        old = old_by_key[key(row)]
-        assert math.isclose(float(row["mae"]), float(old["mae"]), rel_tol=0.0, abs_tol=1e-7)
-        assert math.isclose(float(row["rmse"]), float(old["rmse"]), rel_tol=0.0, abs_tol=1e-7)
 
 
 def test_blinn_reference_and_zero_specular_match_diffuse() -> None:

@@ -16,7 +16,7 @@ from restir_gs.render.aligned_asset_registry import (
     resolve_aligned_asset_paths,
     resolve_requested_asset_ids,
 )
-from scripts.download_dxgl_apple_splat import DxglAppleSplatPlan, download_dxgl_splat, validate_dxgl_splat_file
+from scripts._dxgl_download import DxglSplatPlan, download_dxgl_splat, validate_dxgl_splat_file
 
 
 def main() -> int:
@@ -44,7 +44,7 @@ def _run_one(spec, repo_root: Path, dry_run: bool) -> None:
     resolved = resolve_aligned_asset_paths(spec, repo_root=repo_root)
     size_bytes = resolved.splat_path.stat().st_size if resolved.splat_path.exists() else 0
     summary_path = resolved.splat_path.parent / f"{spec.asset_id}_splat_intake_summary.json"
-    plan = DxglAppleSplatPlan(
+    plan = DxglSplatPlan(
         url=spec.splat_url,
         splat_path=resolved.splat_path,
         summary_path=summary_path,

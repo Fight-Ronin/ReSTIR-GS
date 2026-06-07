@@ -2,6 +2,8 @@
 
 Phase 37 promotes the visibility-aware target from an optional diagnostic into the preferred active renderer path. This is a runner and documentation policy change; the reusable renderer API still supports the diffuse compatibility baseline.
 
+Current active runner defaults were refined after this phase: Phase 42 adds conservative `temporal_filtered_ris`, uses `temporal_history_m_cap=1`, and produces `72` renderer rows for the four-asset testing set. Phase 43 tested but did not retain an aggressive pre-gate filter. The visibility target/proposal policy below remains the active target policy.
+
 ## Active Renderer Policy
 
 The active Windows renderer runner now defaults to:
@@ -9,6 +11,8 @@ The active Windows renderer runner now defaults to:
 ```text
 target_mode=visibility
 proposal=visibility_geometric
+visibility_shadow_pcf_radius=1
+temporal_history_m_cap=1
 num_lights=16
 render_size=128x128
 frame_indices=45,46,47
@@ -65,10 +69,16 @@ RESTIRGS_RESTIR_WIDTH
 RESTIRGS_RESTIR_HEIGHT
 RESTIRGS_RESTIR_FRAME_INDICES
 RESTIRGS_RESTIR_OUTPUT_DIR
+RESTIRGS_RESTIR_VISIBILITY_SHADOW_PCF_RADIUS
+RESTIRGS_RESTIR_TEMPORAL_HISTORY_M_CAP
+RESTIRGS_RESTIR_TEMPORAL_FILTER_BLEND_MAX
+RESTIRGS_RESTIR_TEMPORAL_FILTER_CLAMP_SCALE
+RESTIRGS_RESTIR_TEMPORAL_FILTER_CLAMP_MIN
 RESTIRGS_RESTIR_EXTRA_ARGS
 ```
 
 Set `RESTIRGS_RESTIR_FRAME_INDICES=manifest` to use the manifest temporal window.
+Set `RESTIRGS_RESTIR_VISIBILITY_SHADOW_PCF_RADIUS=0` to reproduce the legacy hard shadow-map visibility target.
 
 ## Expected Validation
 
@@ -77,7 +87,10 @@ The active renderer summary should record:
 ```text
 target_mode=visibility
 proposal=visibility_geometric
-row_count=48
+visibility_shadow_pcf_radius=1
+temporal_history_m_cap=1
+temporal_filtered_ris rows present
+row_count=72
 all_numeric_finite=true
 ```
 

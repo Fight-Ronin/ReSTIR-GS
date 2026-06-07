@@ -298,10 +298,14 @@ def test_restir_renderer_windows_runner_documents_active_visibility_defaults() -
     assert "RESTIRGS_RESTIR_FRAME_INDICES=45,46,47" in text
     assert "RESTIRGS_RESTIR_FRAME_INDICES%\"==\"manifest" in text
     assert "RESTIRGS_RESTIR_OUTPUT_DIR=outputs\\aligned_restir" in text
+    assert "RESTIRGS_RESTIR_VISIBILITY_SHADOW_PCF_RADIUS=1" in text
+    assert "RESTIRGS_RESTIR_TEMPORAL_HISTORY_M_CAP" in text
     assert "RESTIRGS_RESTIR_EXTRA_ARGS" in text
     assert "scripts\\demo_26_aligned_restir_renderer.py" in text
     assert "--target-mode" in text
     assert "--num-lights" in text
+    assert "--temporal-history-m-cap" in text
+    assert "--visibility-shadow-pcf-radius" in text
 
 
 def test_active_windows_runners_share_cuda_preflight() -> None:
