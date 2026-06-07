@@ -1,0 +1,8 @@
+{
+  "asset_id": "my_room",
+  "workspace": "outputs/gsgen",
+  "source": {
+    "kind": "images",
+    "path": "data/room_capture/my_room/images"
+  }
+}
