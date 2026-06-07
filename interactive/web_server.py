@@ -31,6 +31,9 @@ from restir_gs.render.aligned_asset_registry import DEFAULT_MANIFEST_PATH
 
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+WEB_FOREGROUND_VIEWS = {"rgb", "lambertian", "blinn_phong"}
+WEB_MIN_RENDER_DIMENSION = 64
+WEB_MAX_RENDER_DIMENSION = 2048
 
 
 @dataclass
@@ -47,12 +50,20 @@ class WebViewerState:
 
     def image_png(self) -> bytes:
         with self.lock:
-            _title, image = view_image(self.session.result, self.session.view)
+            image = web_display_image(self.session.result, self.session.view)
             return image_array_to_png_bytes(image)
 
     def set_view(self, view: str) -> dict[str, object]:
         with self.lock:
             self.session.set_view(view)
+            return self._snapshot_unlocked()
+
+    def resize(self, payload: dict[str, object]) -> dict[str, object]:
+        width, height = clamp_web_render_size(payload.get("width", 0), payload.get("height", 0))
+        with self.lock:
+            changed = self.session.resize(width, height)
+            if not changed:
+                self.session.status_message = f"viewport {width}x{height}"
             return self._snapshot_unlocked()
 
     def apply_action(self, payload: dict[str, object]) -> dict[str, object]:
@@ -102,6 +113,58 @@ def image_array_to_png_bytes(image: np.ndarray) -> bytes:
     return buffer.getvalue()
 
 
+def clamp_web_render_size(width: object, height: object) -> tuple[int, int]:
+    width_int = int(round(float(width)))
+    height_int = int(round(float(height)))
+    width_int = max(WEB_MIN_RENDER_DIMENSION, min(width_int, WEB_MAX_RENDER_DIMENSION))
+    height_int = max(WEB_MIN_RENDER_DIMENSION, min(height_int, WEB_MAX_RENDER_DIMENSION))
+    return width_int, height_int
+
+
+def web_display_image(result: Any, view: str) -> np.ndarray:
+    if view not in WEB_FOREGROUND_VIEWS:
+        _title, image = view_image(result, view)
+        return image
+    rgb = _web_foreground_rgb_tensor(result, view)
+    alpha = result.gbuffer.alpha
+    return web_rgba_image(rgb, alpha)
+
+
+def web_rgba_image(rgb: torch.Tensor, alpha: torch.Tensor, alpha_epsilon: float = 1e-4) -> np.ndarray:
+    if rgb.ndim != 3 or rgb.shape[-1] != 3:
+        raise ValueError(f"Expected RGB tensor shape [H,W,3], got {tuple(rgb.shape)}")
+    if alpha.shape != rgb.shape[:2]:
+        raise ValueError(f"Expected alpha shape {tuple(rgb.shape[:2])}, got {tuple(alpha.shape)}")
+    if alpha_epsilon <= 0.0:
+        raise ValueError(f"Expected positive alpha_epsilon, got {alpha_epsilon}")
+
+    rgb_cpu = rgb.detach().cpu().float()
+    alpha_cpu = alpha.detach().cpu().float().clamp(0.0, 1.0)
+    visible = alpha_cpu > float(alpha_epsilon)
+    denominator = alpha_cpu.clamp_min(float(alpha_epsilon))[..., None]
+    straight_rgb = torch.where(
+        visible[..., None],
+        (rgb_cpu / denominator).clamp(0.0, 1.0),
+        torch.zeros_like(rgb_cpu),
+    )
+    rgba = torch.cat((straight_rgb, alpha_cpu[..., None]), dim=-1)
+    return (rgba.numpy() * 255.0).round().astype(np.uint8)
+
+
+def _web_foreground_rgb_tensor(result: Any, view: str) -> torch.Tensor:
+    if view == "rgb":
+        return result.gbuffer.rgb
+    if view == "lambertian":
+        if result.lambertian is None:
+            raise RuntimeError("Lambertian view was not computed; render this frame with required_view='lambertian'.")
+        return result.lambertian.composite_rgb
+    if view == "blinn_phong":
+        if result.blinn_phong is None:
+            raise RuntimeError("Blinn-Phong view was not computed; render this frame with required_view='blinn_phong'.")
+        return result.blinn_phong.composite_rgb
+    raise ValueError(f"Unsupported web foreground view '{view}'.")
+
+
 def save_session_outputs(session: InteractiveSession, output_dir: Path) -> dict[str, str]:
     result = session.render_for_view("blinn_phong")
     metadata = viewer_save_metadata(session.settings, result, session.asset)
@@ -131,6 +194,14 @@ def create_app(state: WebViewerState):
     async def api_view(request: _FastAPIRequest):
         payload = await request.json()
         return JSONResponse(state.set_view(str(payload.get("view", ""))))
+
+    @app.post("/api/resize")
+    async def api_resize(request: _FastAPIRequest):
+        payload = await request.json()
+        try:
+            return JSONResponse(state.resize(payload))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     @app.post("/api/action")
     async def api_action(request: _FastAPIRequest):

@@ -4,6 +4,9 @@ const busyBadge = document.getElementById("busy");
 const metrics = document.getElementById("metrics");
 const statusBox = document.getElementById("status");
 const assetTitle = document.getElementById("asset-title");
+const viewBadge = document.getElementById("view-badge");
+const frameBadge = document.getElementById("frame-badge");
+const viewportReadout = document.getElementById("viewport-readout");
 const layerButtons = Array.from(document.querySelectorAll("[data-view]"));
 const resetButton = document.getElementById("reset-button");
 const saveButton = document.getElementById("save-button");
@@ -12,6 +15,18 @@ let snapshot = null;
 let busy = false;
 let drag = null;
 let pendingControlDown = false;
+let resizeTimer = null;
+
+const viewLabels = {
+  rgb: "RGB",
+  alpha: "Alpha",
+  depth: "Depth",
+  normal: "Normal",
+  lambertian: "Lambertian",
+  blinn_phong: "Blinn-Phong",
+};
+const minRenderDimension = 64;
+const maxRenderDimension = 2048;
 
 function setBusy(value) {
   busy = value;
@@ -32,20 +47,41 @@ function updateUi(data) {
   const asset = data.asset || {};
   const render = data.render || {};
   const camera = data.camera || {};
+  const viewLabel = viewLabels[data.view] || data.view;
+  const frameNumber = Number(data.frame_index) + 1;
+  document.documentElement.dataset.view = data.view || "rgb";
   assetTitle.textContent = asset.label || "ReSTIR-GS Viewer";
-  metrics.textContent = [
-    `frame ${Number(data.frame_index) + 1}`,
-    `view ${data.view}`,
-    `render ${Number(render.render_ms || 0).toFixed(1)} ms`,
-    `valid ${Number(render.valid_pixels || 0)} px`,
+  setMetricChips([
+    `frame ${frameNumber}`,
+    `${viewLabel}`,
+    `${Number(render.render_ms || 0).toFixed(1)} ms`,
+    `${Number(render.valid_pixels || 0)} px`,
     `yaw ${Number(camera.yaw_degrees || 0).toFixed(1)}`,
     `pitch ${Number(camera.pitch_degrees || 0).toFixed(1)}`,
     `radius ${Number(camera.radius || 0).toFixed(3)}`,
-  ].join(" | ");
+  ]);
+  viewBadge.textContent = viewLabel;
+  frameBadge.textContent = `Frame ${frameNumber}`;
+  viewportReadout.textContent = [
+    `${Number(camera.width || 0)} x ${Number(camera.height || 0)}`,
+    `${Number(render.render_ms || 0).toFixed(1)} ms`,
+    data.status || "ready",
+  ].join("  /  ");
   statusBox.textContent = data.status || "ready";
   layerButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.view === data.view);
   });
+}
+
+function setMetricChips(values) {
+  metrics.replaceChildren(
+    ...values.map((value) => {
+      const chip = document.createElement("span");
+      chip.className = "metric-chip";
+      chip.textContent = value;
+      return chip;
+    }),
+  );
 }
 
 function refreshImage() {
@@ -89,6 +125,37 @@ function setView(view) {
 
 function saveCurrent() {
   return postJson("/api/save");
+}
+
+function viewportRenderSize() {
+  const rect = viewportWrap.getBoundingClientRect();
+  const width = Math.round(Math.max(minRenderDimension, Math.min(rect.width, maxRenderDimension)));
+  const height = Math.round(Math.max(minRenderDimension, Math.min(rect.height, maxRenderDimension)));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return null;
+  }
+  return { width, height };
+}
+
+function scheduleViewportResize() {
+  window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(syncViewportSize, 180);
+}
+
+async function syncViewportSize() {
+  const size = viewportRenderSize();
+  if (size === null) {
+    return;
+  }
+  if (busy) {
+    scheduleViewportResize();
+    return;
+  }
+  const camera = (snapshot && snapshot.camera) || {};
+  if (Number(camera.width) === size.width && Number(camera.height) === size.height) {
+    return;
+  }
+  await postJson("/api/resize", size);
 }
 
 layerButtons.forEach((button) => {
@@ -221,4 +288,13 @@ viewportWrap.addEventListener(
 
 refreshSnapshot().catch((error) => {
   statusBox.textContent = `error: ${error.message}`;
+}).finally(() => {
+  scheduleViewportResize();
 });
+
+if ("ResizeObserver" in window) {
+  const resizeObserver = new ResizeObserver(() => scheduleViewportResize());
+  resizeObserver.observe(viewportWrap);
+} else {
+  window.addEventListener("resize", scheduleViewportResize);
+}

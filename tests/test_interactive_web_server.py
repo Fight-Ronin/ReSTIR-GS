@@ -8,8 +8,18 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 import pytest
+import torch
 
-from interactive.web_server import WebViewerState, build_parser, create_app, image_array_to_png_bytes, require_web_dependencies
+from interactive.web_server import (
+    WebViewerState,
+    build_parser,
+    create_app,
+    image_array_to_png_bytes,
+    require_web_dependencies,
+    clamp_web_render_size,
+    web_display_image,
+    web_rgba_image,
+)
 from restir_gs.render.orbit_camera import OrbitCameraState
 
 
@@ -28,6 +38,39 @@ def test_image_array_to_png_bytes_round_trips_rgb() -> None:
 def test_image_array_to_png_bytes_rejects_non_uint8() -> None:
     with pytest.raises(ValueError, match="Expected uint8"):
         image_array_to_png_bytes(np.zeros((2, 3, 3), dtype=np.float32))
+
+
+def test_web_rgba_image_unpremultiplies_rgb_over_alpha() -> None:
+    rgb = torch.tensor([[[0.20, 0.10, 0.00], [0.0, 0.0, 0.0]]], dtype=torch.float32)
+    alpha = torch.tensor([[0.50, 0.00]], dtype=torch.float32)
+
+    rgba = web_rgba_image(rgb, alpha)
+
+    assert rgba.shape == (1, 2, 4)
+    assert rgba[0, 0].tolist() == [102, 51, 0, 128]
+    assert rgba[0, 1].tolist() == [0, 0, 0, 0]
+
+
+def test_web_display_image_uses_rgba_for_foreground_views() -> None:
+    rgb = torch.tensor([[[0.25, 0.50, 0.75]]], dtype=torch.float32)
+    alpha = torch.ones((1, 1), dtype=torch.float32)
+    result = SimpleNamespace(
+        gbuffer=SimpleNamespace(
+            rgb=rgb,
+            alpha=alpha,
+            depth=alpha,
+            valid_mask=torch.ones((1, 1), dtype=torch.bool),
+            normal_cam=rgb,
+            normal_mask=torch.ones((1, 1), dtype=torch.bool),
+        ),
+        lambertian=SimpleNamespace(composite_rgb=rgb * 0.5),
+        blinn_phong=SimpleNamespace(composite_rgb=rgb * 0.25),
+    )
+
+    assert web_display_image(result, "rgb").shape == (1, 1, 4)
+    assert web_display_image(result, "lambertian").shape == (1, 1, 4)
+    assert web_display_image(result, "blinn_phong").shape == (1, 1, 4)
+    assert web_display_image(result, "alpha").shape == (1, 1)
 
 
 def test_web_viewer_state_routes_actions_and_save(tmp_path: Path) -> None:
@@ -75,6 +118,22 @@ def test_web_viewer_state_rejects_unknown_action(tmp_path: Path) -> None:
         state.apply_action({"action": "teleport"})
 
 
+def test_web_viewer_state_resizes_to_viewport_dimensions(tmp_path: Path) -> None:
+    session = _FakeSession()
+    state = WebViewerState(
+        session=session,
+        asset_label="fake asset",
+        output_dir=tmp_path,
+        save_fn=lambda _session, _output_dir: {},
+    )
+
+    snapshot = state.resize({"width": 320.2, "height": 180.8})
+
+    assert snapshot["camera"]["width"] == 320
+    assert snapshot["camera"]["height"] == 181
+    assert session.calls == [("resize", 320, 181)]
+
+
 def test_web_parser_exposes_host_port_and_viewer_resolution() -> None:
     args = build_parser().parse_args(["--host", "0.0.0.0", "--port", "9000", "--width", "320", "--height", "240"])
 
@@ -82,6 +141,11 @@ def test_web_parser_exposes_host_port_and_viewer_resolution() -> None:
     assert args.port == 9000
     assert args.width == 320
     assert args.height == 240
+
+
+def test_clamp_web_render_size_bounds_viewport_dimensions() -> None:
+    assert clamp_web_render_size(120.4, 80.6) == (120, 81)
+    assert clamp_web_render_size(1, 9000) == (64, 2048)
 
 
 def test_create_app_registers_web_viewer_routes(tmp_path: Path) -> None:
@@ -104,6 +168,7 @@ def test_create_app_registers_web_viewer_routes(tmp_path: Path) -> None:
     assert ("/api/snapshot", "GET") in routes
     assert ("/api/image.png", "GET") in routes
     assert ("/api/view", "POST") in routes
+    assert ("/api/resize", "POST") in routes
     assert ("/api/action", "POST") in routes
     assert ("/api/save", "POST") in routes
 
@@ -160,6 +225,20 @@ class _FakeSession:
         self.view = view
         self.status_message = f"view: {view}"
         return True
+
+    def resize(self, width: int, height: int) -> bool:
+        self.calls.append(("resize", width, height))
+        changed = self.state.width != width or self.state.height != height
+        self.state = OrbitCameraState(
+            self.state.target,
+            self.state.yaw_degrees,
+            self.state.pitch_degrees,
+            self.state.radius,
+            self.state.focal_scale,
+            width,
+            height,
+        )
+        return changed
 
     def move_camera(self, command: str) -> bool:
         self.calls.append(("move", command))

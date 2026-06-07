@@ -378,6 +378,14 @@ def test_interactive_session_switches_cached_layers_without_rerender() -> None:
     assert calls[-1] == "blinn_phong"
     assert session.step_frame(1) is True
     assert session.frame_index == 1
+    assert session.resize(80, 40) is True
+    assert session.state.width == 80
+    assert session.state.height == 40
+    assert session.settings.width == 80
+    assert session.settings.height == 40
+    session.reset_camera()
+    assert session.state.width == 80
+    assert session.state.height == 40
 
 
 def test_interactive_session_orbit_keeps_target_for_object_inspection() -> None:

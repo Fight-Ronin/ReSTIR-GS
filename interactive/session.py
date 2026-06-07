@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import torch
@@ -99,6 +99,18 @@ class InteractiveSession:
     def dolly(self, scale: float) -> Any:
         self.state = orbit_state_dolly(self.state, scale=scale)
         return self.render()
+
+    def resize(self, width: int, height: int) -> bool:
+        width = int(width)
+        height = int(height)
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Expected positive session size, got {width}x{height}")
+        if self.state.width == width and self.state.height == height:
+            return False
+        self.settings = replace(self.settings, width=width, height=height)
+        self.state = replace(self.state, width=width, height=height)
+        self.render(status_message=f"viewport {width}x{height}")
+        return True
 
     def move_camera(self, command: str) -> bool:
         step = camera_move_step(self.state)

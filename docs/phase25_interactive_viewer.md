@@ -117,6 +117,10 @@ The WebUI runner defaults to `1024x1024` so the viewport fills more of a desktop
 python -m interactive.web_server --ply C:\path\to\splat.ply --device cuda
 ```
 
+After the browser connects, the WebUI observes the viewport size and asks the server to re-render at that canvas size, clamped to `64..2048` pixels per axis. This keeps the backend render buffer aligned with the visible WebUI stage instead of letterboxing a fixed square render.
+
+For browser display only, RGB, Lambertian, and Blinn-Phong views are sent as RGBA PNGs and composited over the WebUI stage background. Alpha, depth, and normal remain opaque diagnostic buffers. Saved outputs and the matplotlib inspector keep the backend render images unchanged.
+
 ## Controls
 
 ```text
