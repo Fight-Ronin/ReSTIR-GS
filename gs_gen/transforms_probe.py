@@ -56,8 +56,8 @@ def resolve_image_path(dataset_root: Path, file_path: str) -> Path:
 
 def _validate_intrinsics(data: dict[str, Any], frames: list[Any], errors: list[str]) -> None:
     for key in ("w", "h"):
-        if key not in data:
-            errors.append(f"missing global intrinsic {key!r}")
+        if key not in data and not _all_frames_have_key(frames, key):
+            errors.append(f"missing {key!r} globally or on every frame")
     if "fl_x" in data or "camera_angle_x" in data:
         return
     frames_with_focal = [
@@ -71,8 +71,8 @@ def _validate_frame(frame: Any, index: int, dataset_root: Path, errors: list[str
     if not isinstance(frame, dict):
         errors.append(f"frame {index} is not an object")
         return
-    if not _is_matrix4x4(frame.get("transform_matrix")):
-        errors.append(f"frame {index} is missing a 4x4 transform_matrix")
+    if not _is_numeric_matrix4x4(frame.get("transform_matrix")):
+        errors.append(f"frame {index} is missing a numeric 4x4 transform_matrix")
     file_path = frame.get("file_path")
     if not isinstance(file_path, str) or not file_path:
         errors.append(f"frame {index} is missing file_path")
@@ -82,10 +82,18 @@ def _validate_frame(frame: Any, index: int, dataset_root: Path, errors: list[str
         missing_images.append(str(image_path))
 
 
-def _is_matrix4x4(value: Any) -> bool:
+def _all_frames_have_key(frames: list[Any], key: str) -> bool:
+    return bool(frames) and all(isinstance(frame, dict) and key in frame for frame in frames)
+
+
+def _is_numeric_matrix4x4(value: Any) -> bool:
     if not isinstance(value, list) or len(value) != 4:
         return False
-    return all(isinstance(row, list) and len(row) == 4 for row in value)
+    return all(isinstance(row, list) and len(row) == 4 and all(_is_number(item) for item in row) for row in value)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _result(

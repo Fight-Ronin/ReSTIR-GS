@@ -33,7 +33,9 @@ from restir_gs.restir.renderer import (
     all_numeric_finite,
     make_restir_metric_rows,
     render_restir_frame,
+    summarize_restir_asset_timing_rows,
     summarize_restir_rows,
+    summarize_restir_timing_rows,
 )
 
 
@@ -113,6 +115,19 @@ def write_csv(path: Path, rows: list[dict[str, int | float | str]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def run_with_gpu_timing(device: torch.device, fn):
+    if device.type != "cuda":
+        return fn(), 0.0
+    with torch.cuda.device(device):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        result = fn()
+        end.record()
+    torch.cuda.synchronize(device)
+    return result, float(start.elapsed_time(end))
 
 
 def save_final_previews(output_dir: Path, result) -> dict[str, str]:
@@ -277,16 +292,20 @@ def main() -> int:
             device=device,
         )
         shadow_bundle = None
+        shadow_bundle_asset_gpu_ms = 0.0
         if args.target_mode == "visibility":
             target_world = torch.tensor(light_info["center"], dtype=torch.float32, device=device)
-            shadow_bundle = make_shadow_map_bundle(
-                asset.loaded.scene,
-                world_lights.positions_world,
-                torch.arange(args.num_lights, dtype=torch.long, device=device),
-                target_world,
-                scene_radius=float(light_info["radius"]),
-                resolution=args.visibility_shadow_resolution,
-                shadow_bias_scale=args.visibility_shadow_bias_scale,
+            shadow_bundle, shadow_bundle_asset_gpu_ms = run_with_gpu_timing(
+                device,
+                lambda: make_shadow_map_bundle(
+                    asset.loaded.scene,
+                    world_lights.positions_world,
+                    torch.arange(args.num_lights, dtype=torch.long, device=device),
+                    target_world,
+                    scene_radius=float(light_info["radius"]),
+                    resolution=args.visibility_shadow_resolution,
+                    shadow_bias_scale=args.visibility_shadow_bias_scale,
+                ),
             )
 
         asset_output_dir = args.output_dir / asset_id
@@ -308,7 +327,7 @@ def main() -> int:
                 previous_history=previous,
                 shadow_bundle=shadow_bundle,
             )
-            frame_rows = make_restir_metric_rows(asset_id, result, settings)
+            frame_rows = make_restir_metric_rows(asset_id, result, settings, shadow_bundle_asset_gpu_ms=shadow_bundle_asset_gpu_ms)
             rows.extend(frame_rows)
             contribution_rows = {
                 str(row["estimator"]): row
@@ -342,6 +361,8 @@ def main() -> int:
                     "temporal_filter_confidence_mean": contribution_rows["temporal_filtered_ris"]["temporal_filter_confidence_mean"],
                     "temporal_filter_alpha_mean": contribution_rows["temporal_filtered_ris"]["temporal_filter_alpha_mean"],
                     "temporal_filter_alpha_max": contribution_rows["temporal_filtered_ris"]["temporal_filter_alpha_max"],
+                    "frame_gpu_ms": contribution_rows["temporal_filtered_ris"]["frame_gpu_ms"],
+                    "frame_wall_ms": contribution_rows["temporal_filtered_ris"]["frame_wall_ms"],
                 }
             )
             contact_records.append(
@@ -390,6 +411,7 @@ def main() -> int:
                 "first_frame_temporal_equals_initial": first_frame_temporal_equals_initial,
                 "first_frame_filtered_equals_initial": first_frame_filtered_equals_initial,
                 "light_info": light_info,
+                "shadow_bundle_asset_gpu_ms": shadow_bundle_asset_gpu_ms,
                 "frames": frame_records,
                 "outputs": {
                     "contact_sheet": str(contact_path),
@@ -438,6 +460,8 @@ def main() -> int:
         "all_numeric_finite": all_numeric_finite(rows),
         "assets": asset_summaries,
         "summary": summarize_restir_rows(rows),
+        "timing_summary": summarize_restir_timing_rows(rows),
+        "asset_timing": summarize_restir_asset_timing_rows(rows),
         "outputs": {"csv": str(csv_path), "summary": str(summary_path)},
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

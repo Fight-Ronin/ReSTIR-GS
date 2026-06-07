@@ -10,6 +10,7 @@ from gs_gen.paths import DEFAULT_WORKSPACE, validate_asset_id
 from gs_gen.source_probe import make_source, probe_source
 from gs_gen.stage import stage_asset
 from gs_gen.validate import format_validation_summary, validate_exported_asset
+from gs_gen.video_extract import extract_video_frames
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +32,15 @@ def main(argv: list[str] | None = None) -> int:
     source_group.add_argument("--video", type=Path, default=None)
     source.add_argument("--json", action="store_true")
     source.set_defaults(func=run_probe_source)
+
+    extract = subparsers.add_parser("extract-frames", help="Extract an image sequence from a video source.")
+    extract.add_argument("--video", type=Path, required=True)
+    extract.add_argument("--output-dir", type=Path, required=True)
+    extract.add_argument("--target-fps", type=float, default=5.0)
+    extract.add_argument("--max-frames", type=int, default=None)
+    extract.add_argument("--dry-run", action="store_true")
+    extract.add_argument("--json", action="store_true")
+    extract.set_defaults(func=run_extract_frames)
 
     validate = subparsers.add_parser("validate", help="Validate processed transforms and exported splat.")
     validate.add_argument("--dataset-root", type=Path, required=True)
@@ -104,6 +114,30 @@ def run_validate(args: argparse.Namespace) -> int:
     else:
         print(format_validation_summary(result))
     return 0 if bool(result["valid"]) else 1
+
+
+def run_extract_frames(args: argparse.Namespace) -> int:
+    result = extract_video_frames(
+        video_path=args.video,
+        output_dir=args.output_dir,
+        target_fps=args.target_fps,
+        max_frames=args.max_frames,
+        dry_run=args.dry_run,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"video_path: {result['video_path']}")
+        print(f"output_dir: {result['output_dir']}")
+        print(f"source_fps: {result['source_fps']}")
+        print(f"frame_count: {result['frame_count']}")
+        print(f"size: {result['width']}x{result['height']}")
+        print(f"target_fps: {result['target_fps']}")
+        print(f"planned_frame_count: {result['planned_frame_count']}")
+        print(f"written: {result['written']}")
+        if args.dry_run:
+            print("dry-run: no files written")
+    return 0
 
 
 def run_stage(args: argparse.Namespace) -> int:

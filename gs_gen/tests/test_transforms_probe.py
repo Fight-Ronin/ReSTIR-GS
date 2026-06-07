@@ -49,3 +49,29 @@ def test_validate_transforms_accepts_frame_level_focal(tmp_path: Path) -> None:
     result = validate_transforms(root / "transforms.json", dataset_root=root)
 
     assert result["valid"] is True
+
+
+def test_validate_transforms_accepts_frame_level_dimensions(tmp_path: Path) -> None:
+    root = write_dataset(tmp_path)
+    data = json.loads((root / "transforms.json").read_text(encoding="utf-8"))
+    width = data.pop("w")
+    height = data.pop("h")
+    data["frames"][0]["w"] = width
+    data["frames"][0]["h"] = height
+    (root / "transforms.json").write_text(json.dumps(data), encoding="utf-8")
+
+    result = validate_transforms(root / "transforms.json", dataset_root=root)
+
+    assert result["valid"] is True
+
+
+def test_validate_transforms_rejects_non_numeric_transform(tmp_path: Path) -> None:
+    root = write_dataset(tmp_path)
+    data = json.loads((root / "transforms.json").read_text(encoding="utf-8"))
+    data["frames"][0]["transform_matrix"][0][0] = "not-a-number"
+    (root / "transforms.json").write_text(json.dumps(data), encoding="utf-8")
+
+    result = validate_transforms(root / "transforms.json", dataset_root=root)
+
+    assert result["valid"] is False
+    assert "frame 0 is missing a numeric 4x4 transform_matrix" in result["errors"]

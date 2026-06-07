@@ -86,6 +86,21 @@ def test_pcf_radius_one_averages_hard_shadow_samples() -> None:
     assert torch.allclose(visibility, torch.full((1, 1, 1), 3.0 / 9.0))
 
 
+def test_dense_visibility_gathers_per_light_shadow_maps() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[1.0, 1.0], depth_bias=0.0)
+
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        torch.tensor([[[0, 1, 0]]], dtype=torch.long),
+    )
+
+    assert torch.allclose(visibility, torch.tensor([[[1.0, 0.0, 1.0]]]))
+
+
 def test_low_shadow_alpha_means_no_blocker() -> None:
     gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
     camera = make_identity_camera()
@@ -176,6 +191,23 @@ def make_shadow_bundle(depth: float, alpha: float, depth_bias: float) -> ShadowM
         light_cameras=[light_camera],
         depth_maps=torch.full((1, 3, 3), depth, dtype=torch.float32),
         alpha_maps=torch.full((1, 3, 3), alpha, dtype=torch.float32),
+        scene_radius=1.0,
+        depth_bias=depth_bias,
+    )
+
+
+def make_two_light_shadow_bundle(depths: list[float], alphas: list[float], depth_bias: float) -> ShadowMapBundle:
+    light_camera = PinholeCamera(
+        viewmats=torch.eye(4, dtype=torch.float32)[None],
+        intrinsics=torch.tensor([[[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]]], dtype=torch.float32),
+        width=3,
+        height=3,
+    )
+    return ShadowMapBundle(
+        light_indices=torch.tensor([0, 1], dtype=torch.long),
+        light_cameras=[light_camera, light_camera],
+        depth_maps=torch.stack([torch.full((3, 3), depth, dtype=torch.float32) for depth in depths], dim=0),
+        alpha_maps=torch.stack([torch.full((3, 3), alpha, dtype=torch.float32) for alpha in alphas], dim=0),
         scene_radius=1.0,
         depth_bias=depth_bias,
     )

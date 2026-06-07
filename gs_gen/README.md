@@ -4,6 +4,22 @@ Standalone helper for producing local room Gaussian Splatting assets before they
 
 This directory intentionally does not modify `configs/aligned_assets.json` or the active renderer path. It only plans, probes, validates, and stages generated assets.
 
+## Local Tools And Assets
+
+Capture videos and third-party reconstruction tools are local-only and ignored by Git. After cloning, place optional source videos wherever convenient, for example:
+
+```text
+gs_gen/asset/
+```
+
+The Windows COLMAP helper expects a local no-CUDA COLMAP bundle at:
+
+```text
+gs_gen/tools/colmap-4.0.4-nocuda/bin/colmap.exe
+```
+
+The committed helper scripts under `gs_gen/tools/` are small wrappers only; the extracted COLMAP directory itself should stay untracked.
+
 ## Input Modes
 
 Use one source:
@@ -18,6 +34,13 @@ Optional source check:
 ```powershell
 python -m gs_gen probe-source --images data\room_capture\my_room\images
 python -m gs_gen probe-source --video data\room_capture\my_room\walkthrough.mp4
+```
+
+If Nerfstudio/FFmpeg is not available yet, a video can be prepared as an image sequence first:
+
+```powershell
+python -m gs_gen extract-frames --video data\room_capture\my_room\walkthrough.mp4 --output-dir outputs\gsgen\my_room\source_images --target-fps 5
+python -m gs_gen plan --asset-id my_room --images outputs\gsgen\my_room\source_images
 ```
 
 ## Planned External Commands

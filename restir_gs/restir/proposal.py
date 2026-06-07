@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 
 from restir_gs.lighting.deferred import PointLights
-from restir_gs.lighting.visibility import ShadowMapBundle, evaluate_shadow_visibility
+from restir_gs.lighting.visibility import ShadowMapBundle, ShadowVisibilityCache, evaluate_shadow_visibility, gather_shadow_visibility
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 
@@ -108,6 +108,38 @@ def compute_visibility_geometric_proposal_distribution(
         alpha_threshold=alpha_threshold,
         pcf_radius=pcf_radius,
     ).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
+    weights = base * visibility
+    weight_sum = weights.sum(dim=-1, keepdim=True)
+    normalized = weights / weight_sum.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)
+    return torch.where(weight_sum > 0.0, normalized, base)
+
+
+def compute_visibility_geometric_proposal_distribution_cached(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    visibility_cache: ShadowVisibilityCache,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> torch.Tensor:
+    """Compute visibility-geometric proposal probabilities from cached all-light visibility."""
+    light_count = lights.positions_cam.shape[0]
+    expected = torch.arange(light_count, dtype=torch.long, device=visibility_cache.light_indices.device)
+    if visibility_cache.light_indices.shape != (light_count,) or not torch.equal(
+        visibility_cache.light_indices.to(dtype=torch.long),
+        expected,
+    ):
+        raise ValueError("Cached visibility-geometric proposal requires one visibility layer for every light in index order.")
+
+    base = compute_geometric_proposal_distribution(
+        gbuffer,
+        lights,
+        two_sided=two_sided,
+        distance_epsilon=distance_epsilon,
+    )
+    height, width = gbuffer.depth.shape
+    all_indices = torch.arange(light_count, dtype=torch.long, device=gbuffer.rgb.device)
+    all_indices = all_indices.expand(height, width, light_count)
+    visibility = gather_shadow_visibility(visibility_cache, all_indices).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
     weights = base * visibility
     weight_sum = weights.sum(dim=-1, keepdim=True)
     normalized = weights / weight_sum.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)

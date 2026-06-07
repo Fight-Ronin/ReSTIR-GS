@@ -10,11 +10,16 @@ from restir_gs.lighting.visibility import ShadowMapBundle
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.restir.renderer import (
+    RESTIR_TIMING_FIELDS,
+    RestirFrameTimings,
     RestirRenderSettings,
     apply_confidence_clamped_temporal_filter,
     all_numeric_finite,
+    evaluate_restir_display_frame_from_gbuffer,
     evaluate_restir_frame_from_gbuffer,
     make_restir_metric_rows,
+    summarize_restir_asset_timing_rows,
+    summarize_restir_timing_rows,
 )
 from restir_gs.restir.initial import LightingEstimatorBuffers
 from restir_gs.restir.temporal import TemporalLookup
@@ -32,6 +37,22 @@ def test_no_history_temporal_output_matches_initial_exactly() -> None:
     assert torch.equal(result.temporal_reservoir.light_indices, result.initial_reservoir.light_indices)
     assert not bool(result.lookup.valid_mask.any())
     assert not bool(result.temporal_filter_stats.alpha.any())
+
+
+def test_display_path_skips_reference_but_matches_evaluation_sampling() -> None:
+    settings = RestirRenderSettings(candidate_count=2, candidate_seed_base=10, initial_selection_seed_base=20)
+    gbuffer = make_gbuffer()
+    camera = make_camera()
+    lights = make_lights()
+
+    display = evaluate_restir_display_frame_from_gbuffer(gbuffer, camera, lights, frame_index=0, settings=settings)
+    evaluation = evaluate_restir_frame_from_gbuffer(gbuffer, camera, lights, frame_index=0, settings=settings)
+
+    assert not hasattr(display, "reference")
+    assert torch.equal(display.proposal_samples.light_indices, evaluation.proposal_samples.light_indices)
+    assert torch.equal(display.initial_reservoir.light_indices, evaluation.initial_reservoir.light_indices)
+    assert torch.allclose(display.initial.contribution_rgb, evaluation.initial.contribution_rgb)
+    assert torch.allclose(display.temporal_filtered.composite_rgb, evaluation.temporal_filtered.composite_rgb)
 
 
 def test_valid_history_accumulates_m_and_keeps_finite_weights() -> None:
@@ -148,7 +169,7 @@ def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
 
     assert len(rows) == 6
     for row in rows:
-        assert {
+        expected_fields = {
             "asset_id",
             "frame_index",
             "estimator",
@@ -203,11 +224,51 @@ def test_renderer_rows_have_expected_schema_and_finite_metrics() -> None:
             "bias_g",
             "bias_b",
             "mean_abs_bias",
-        } == set(row)
+        }
+        expected_fields.update(RESTIR_TIMING_FIELDS)
+        assert expected_fields == set(row)
         for key, value in row.items():
             if isinstance(value, float):
                 assert math.isfinite(value), key
     assert all_numeric_finite(rows)
+
+
+def test_cpu_timing_fields_default_to_finite_zero() -> None:
+    settings = RestirRenderSettings(candidate_count=1)
+    result = evaluate_restir_frame_from_gbuffer(make_gbuffer(), make_camera(), make_lights(), frame_index=1, settings=settings)
+
+    rows = make_restir_metric_rows("tiny_asset", result, settings)
+
+    for row in rows:
+        for field in RESTIR_TIMING_FIELDS:
+            assert field in row
+            assert math.isfinite(float(row[field]))
+            assert float(row[field]) == 0.0
+
+
+def test_shadow_bundle_asset_timing_override_is_written_to_rows() -> None:
+    settings = RestirRenderSettings(candidate_count=1)
+    result = evaluate_restir_frame_from_gbuffer(make_gbuffer(), make_camera(), make_lights(), frame_index=1, settings=settings)
+
+    rows = make_restir_metric_rows("tiny_asset", result, settings, shadow_bundle_asset_gpu_ms=12.5)
+
+    assert {float(row["shadow_bundle_asset_gpu_ms"]) for row in rows} == {12.5}
+
+
+def test_timing_summary_computes_exact_mean_max_count() -> None:
+    first = RestirFrameTimings(render_rgbd_gpu_ms=2.0, frame_gpu_ms=5.0, frame_wall_ms=7.0).as_row_fields()
+    second = RestirFrameTimings(render_rgbd_gpu_ms=4.0, frame_gpu_ms=9.0, frame_wall_ms=11.0).as_row_fields()
+    rows = [
+        {"asset_id": "a", **first},
+        {"asset_id": "a", **second},
+    ]
+
+    summary = summarize_restir_timing_rows(rows)
+    asset_summary = summarize_restir_asset_timing_rows(rows)
+
+    assert summary["render_rgbd_gpu_ms"] == {"mean": 3.0, "max": 4.0, "count": 2}
+    assert summary["frame_gpu_ms"] == {"mean": 7.0, "max": 9.0, "count": 2}
+    assert asset_summary["a"]["frame_wall_ms"] == {"mean": 9.0, "max": 11.0, "count": 2}
 
 
 def test_renderer_rejects_frames_without_valid_lighting_pixels() -> None:

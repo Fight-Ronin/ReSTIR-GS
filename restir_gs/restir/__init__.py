@@ -20,10 +20,12 @@ from restir_gs.restir.proposal import (
 )
 from restir_gs.restir.renderer import (
     RestirFrameResult,
+    RestirDisplayFrameResult,
     RestirHistory,
     RestirRenderSettings,
     all_numeric_finite,
     empty_temporal_lookup,
+    evaluate_restir_display_frame_from_gbuffer,
     evaluate_restir_frame_from_gbuffer,
     make_restir_metric_rows,
     render_restir_frame,
@@ -46,6 +48,7 @@ __all__ = [
     "CandidateSamples",
     "EstimatorBuffers",
     "LightingEstimatorBuffers",
+    "RestirDisplayFrameResult",
     "RestirFrameResult",
     "RestirHistory",
     "RestirRenderSettings",
@@ -58,6 +61,7 @@ __all__ = [
     "compute_geometric_proposal_distribution",
     "compute_visibility_geometric_proposal_distribution",
     "empty_temporal_lookup",
+    "evaluate_restir_display_frame_from_gbuffer",
     "evaluate_restir_frame_from_gbuffer",
     "estimate_proposal_diffuse",
     "estimate_proposal_lighting",

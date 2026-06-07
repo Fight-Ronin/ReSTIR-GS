@@ -5,7 +5,10 @@ __pycache__/
 
 outputs/
 
+# Local media and third-party tool bundles are documented but not committed.
+gs_gen/asset/*.mp4
+gs_gen/tools/colmap-4.0.4-nocuda/
+
 # Local CUDA/PyTorch extension caches should not live in the repo.
 torch_extensions/
 *.egg-info/
-

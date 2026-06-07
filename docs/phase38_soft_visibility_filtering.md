@@ -31,7 +31,7 @@ This is applied through the shared visibility path used by:
 - selected-light visibility contribution,
 - visibility-geometric proposal,
 - visibility RIS target,
-- interactive viewer visibility inspection.
+- interactive viewer `--save-and-exit --save-visibility` inspection.
 
 The active Windows renderer runner defaults to:
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from restir_gs.lighting.deferred import PointLights
-from restir_gs.lighting.visibility import ShadowMapBundle
+from restir_gs.lighting.visibility import ShadowMapBundle, make_shadow_visibility_cache, shade_deferred_lambertian_visible, shade_deferred_lambertian_visible_cached
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.restir.initial import estimate_proposal_lighting
@@ -11,8 +11,14 @@ from restir_gs.restir.proposal import (
     CandidateSamples,
     compute_geometric_proposal_distribution,
     compute_visibility_geometric_proposal_distribution,
+    compute_visibility_geometric_proposal_distribution_cached,
 )
-from restir_gs.restir.visibility import estimate_visibility_proposal_lighting, estimate_visibility_ris_initial_lighting
+from restir_gs.restir.visibility import (
+    estimate_visibility_proposal_lighting,
+    estimate_visibility_proposal_lighting_cached,
+    estimate_visibility_ris_initial_lighting,
+    estimate_visibility_ris_initial_lighting_cached,
+)
 
 
 def test_all_visible_proposal_matches_existing_diffuse_estimator() -> None:
@@ -80,6 +86,56 @@ def test_visibility_ris_k1_matches_visibility_proposal_mc_for_positive_target() 
     assert torch.allclose(ris.composite_rgb, mc.composite_rgb)
     assert torch.equal(reservoir.light_indices, torch.tensor([[1]]))
     assert torch.equal(reservoir.M, torch.tensor([[1]]))
+
+
+def test_cached_visibility_paths_match_uncached_paths() -> None:
+    gbuffer = make_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    lights = make_two_lights()
+    shadow = make_shadow_bundle(depths=[10.0, 1.0], alphas=[0.0, 1.0], depth_bias=0.0)
+    shadow.depth_maps[1, 0, 0] = 3.0
+    shadow.depth_maps[1, 0, 1] = 3.0
+    shadow.depth_maps[1, 1, 0] = 3.0
+    cache = make_shadow_visibility_cache(gbuffer, camera, shadow, pcf_radius=1)
+    samples = CandidateSamples(
+        light_indices=torch.tensor([[[0, 1]]], dtype=torch.long),
+        proposal_probs=torch.full((1, 1, 2), 0.5, dtype=torch.float32),
+    )
+
+    reference = shade_deferred_lambertian_visible(gbuffer, camera, lights, shadow, pcf_radius=1)
+    cached_reference = shade_deferred_lambertian_visible_cached(gbuffer, lights, cache)
+    proposal = compute_visibility_geometric_proposal_distribution(gbuffer, camera, lights, shadow, pcf_radius=1)
+    cached_proposal = compute_visibility_geometric_proposal_distribution_cached(gbuffer, lights, cache)
+    mc = estimate_visibility_proposal_lighting(gbuffer, camera, lights, shadow, samples, pcf_radius=1)
+    cached_mc = estimate_visibility_proposal_lighting_cached(gbuffer, lights, cache, samples)
+    ris, reservoir = estimate_visibility_ris_initial_lighting(
+        gbuffer,
+        camera,
+        lights,
+        shadow,
+        samples.light_indices,
+        proposal_probs=samples.proposal_probs,
+        pcf_radius=1,
+        selection_seed=23,
+    )
+    cached_ris, cached_reservoir = estimate_visibility_ris_initial_lighting_cached(
+        gbuffer,
+        lights,
+        cache,
+        samples.light_indices,
+        proposal_probs=samples.proposal_probs,
+        selection_seed=23,
+    )
+
+    assert torch.allclose(cached_reference.diffuse_rgb, reference.diffuse_rgb)
+    assert torch.allclose(cached_reference.composite_rgb, reference.composite_rgb)
+    assert torch.allclose(cached_proposal, proposal)
+    assert torch.allclose(cached_mc.contribution_rgb, mc.contribution_rgb)
+    assert torch.allclose(cached_mc.composite_rgb, mc.composite_rgb)
+    assert torch.allclose(cached_ris.contribution_rgb, ris.contribution_rgb)
+    assert torch.allclose(cached_ris.composite_rgb, ris.composite_rgb)
+    assert torch.equal(cached_reservoir.light_indices, reservoir.light_indices)
+    assert torch.allclose(cached_reservoir.W, reservoir.W)
 
 
 def test_invalid_pixels_produce_zero_visible_proposal_contribution() -> None:

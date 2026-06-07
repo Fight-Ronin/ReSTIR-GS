@@ -7,7 +7,7 @@ The current baseline is an aligned, registry-driven ReSTIR-GS renderer over the 
 Active command:
 
 ```powershell
-scripts\run_active_validation_windows.bat
+scripts\run_active_baseline_demo_windows.bat
 ```
 
 Expected high-level result:
@@ -18,6 +18,8 @@ active renderer rows: 72
 target_mode: visibility
 proposal: visibility_geometric
 all numeric metrics finite: true
+timing_summary present: true
+active demo snapshot present: true
 ```
 
 ## Active Algorithm
@@ -33,6 +35,18 @@ confidence-clamped previous filtered contribution
 ```
 
 The preferred displayed temporal output is `temporal_filtered_ris`.
+Performance readout is now attached to the active renderer output through CUDA-event timing fields. `frame_wall_ms` is retained only as wall-clock context.
+
+## Display / Evaluation Split
+
+The renderer now has two clear surfaces:
+
+```text
+display path     -> ReSTIR display buffers, no all-lights reference
+evaluation path  -> display buffers + all-lights reference + metrics/error maps
+```
+
+The interactive viewer uses display-oriented output by default. `--save-visibility` writes the visibility RIS display image only; `--save-visibility-reference` explicitly computes and writes reference/error images.
 
 ## Current Temporal Policy
 
@@ -53,4 +67,4 @@ The preferred displayed temporal output is `temporal_filtered_ris`.
 
 ## Next Sensible Work
 
-The codebase is clean enough to treat the current active path as the baseline. Future algorithm work should be a deliberate larger change, such as better visibility/correspondence or a new proposal, not more small parameter tuning on the current four assets.
+The codebase is clean enough to treat the current active path as the handoff baseline. Future work should be a deliberate larger change, such as GPU performance engineering for visibility proposal/RIS evaluation, better visibility semantics, broader aligned assets, or a production-quality viewer path. More small parameter tuning on the current four assets is not recommended.

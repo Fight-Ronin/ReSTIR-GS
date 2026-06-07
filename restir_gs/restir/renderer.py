@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
+import time
 from typing import Literal
 
 import torch
@@ -10,9 +11,11 @@ from restir_gs.lighting.asset_lights import WorldPointLights, world_lights_to_ca
 from restir_gs.lighting.deferred import LightingBuffers, PointLights, shade_deferred_lambertian
 from restir_gs.lighting.visibility import (
     ShadowMapBundle,
-    evaluate_selected_light_visible_diffuse,
+    ShadowVisibilityCache,
+    evaluate_selected_light_visible_diffuse_cached,
+    make_shadow_visibility_cache,
     make_shadow_map_bundle,
-    shade_deferred_lambertian_visible,
+    shade_deferred_lambertian_visible_cached,
 )
 from restir_gs.metrics import compute_rgb_error_metrics
 from restir_gs.render.gbuffer import GBuffer, make_pseudo_gbuffer
@@ -28,6 +31,7 @@ from restir_gs.restir.proposal import (
     CandidateSamples,
     compute_geometric_proposal_distribution,
     compute_visibility_geometric_proposal_distribution,
+    compute_visibility_geometric_proposal_distribution_cached,
     sample_light_candidates_from_distribution,
 )
 from restir_gs.restir.temporal import (
@@ -37,10 +41,62 @@ from restir_gs.restir.temporal import (
     reproject_current_to_previous,
     temporal_reservoir_from_initial,
 )
-from restir_gs.restir.visibility import estimate_visibility_proposal_lighting, estimate_visibility_ris_initial_lighting
+from restir_gs.restir.visibility import (
+    estimate_visibility_proposal_lighting_cached,
+    estimate_visibility_ris_initial_lighting_cached,
+)
 
 
 RestirTargetMode = Literal["diffuse", "visibility"]
+
+
+RESTIR_TIMING_FIELDS = (
+    "render_rgbd_gpu_ms",
+    "gbuffer_gpu_ms",
+    "world_lights_to_camera_gpu_ms",
+    "reference_lighting_gpu_ms",
+    "proposal_gpu_ms",
+    "initial_ris_gpu_ms",
+    "temporal_lookup_gpu_ms",
+    "temporal_ris_gpu_ms",
+    "temporal_filter_gpu_ms",
+    "frame_gpu_ms",
+    "frame_wall_ms",
+    "shadow_bundle_asset_gpu_ms",
+)
+
+
+@dataclass(frozen=True)
+class RestirFrameTimings:
+    render_rgbd_gpu_ms: float = 0.0
+    gbuffer_gpu_ms: float = 0.0
+    world_lights_to_camera_gpu_ms: float = 0.0
+    reference_lighting_gpu_ms: float = 0.0
+    proposal_gpu_ms: float = 0.0
+    initial_ris_gpu_ms: float = 0.0
+    temporal_lookup_gpu_ms: float = 0.0
+    temporal_ris_gpu_ms: float = 0.0
+    temporal_filter_gpu_ms: float = 0.0
+    frame_gpu_ms: float = 0.0
+    frame_wall_ms: float = 0.0
+    shadow_bundle_asset_gpu_ms: float = 0.0
+
+    def as_row_fields(self, shadow_bundle_asset_gpu_ms: float | None = None) -> dict[str, float]:
+        shadow_ms = self.shadow_bundle_asset_gpu_ms if shadow_bundle_asset_gpu_ms is None else float(shadow_bundle_asset_gpu_ms)
+        return {
+            "render_rgbd_gpu_ms": float(self.render_rgbd_gpu_ms),
+            "gbuffer_gpu_ms": float(self.gbuffer_gpu_ms),
+            "world_lights_to_camera_gpu_ms": float(self.world_lights_to_camera_gpu_ms),
+            "reference_lighting_gpu_ms": float(self.reference_lighting_gpu_ms),
+            "proposal_gpu_ms": float(self.proposal_gpu_ms),
+            "initial_ris_gpu_ms": float(self.initial_ris_gpu_ms),
+            "temporal_lookup_gpu_ms": float(self.temporal_lookup_gpu_ms),
+            "temporal_ris_gpu_ms": float(self.temporal_ris_gpu_ms),
+            "temporal_filter_gpu_ms": float(self.temporal_filter_gpu_ms),
+            "frame_gpu_ms": float(self.frame_gpu_ms),
+            "frame_wall_ms": float(self.frame_wall_ms),
+            "shadow_bundle_asset_gpu_ms": shadow_ms,
+        }
 
 
 @dataclass(frozen=True)
@@ -85,6 +141,26 @@ class TemporalFilterStats:
 
 
 @dataclass(frozen=True)
+class RestirDisplayFrameResult:
+    frame_index: int
+    camera: PinholeCamera
+    gbuffer: GBuffer
+    lights: PointLights
+    proposal_samples: CandidateSamples
+    geometric_mc: LightingEstimatorBuffers | None
+    initial: LightingEstimatorBuffers
+    initial_reservoir: ReservoirState
+    temporal: LightingEstimatorBuffers
+    temporal_filtered: LightingEstimatorBuffers
+    temporal_reservoir: TemporalReservoirState
+    temporal_filter_stats: TemporalFilterStats
+    lookup: TemporalLookup
+    history: RestirHistory
+    shadow_bundle: ShadowMapBundle | None = None
+    timings: RestirFrameTimings = RestirFrameTimings()
+
+
+@dataclass(frozen=True)
 class RestirFrameResult:
     frame_index: int
     camera: PinholeCamera
@@ -102,6 +178,48 @@ class RestirFrameResult:
     lookup: TemporalLookup
     history: RestirHistory
     shadow_bundle: ShadowMapBundle | None = None
+    timings: RestirFrameTimings = RestirFrameTimings()
+
+
+class _FrameStageTimer:
+    def __init__(self, device: torch.device, enabled: bool | None = None) -> None:
+        self.device = device
+        self.enabled = bool(device.type == "cuda" and torch.cuda.is_available()) if enabled is None else enabled
+        self.events: dict[str, torch.cuda.Event] = {}
+
+    @classmethod
+    def disabled(cls, device: torch.device) -> "_FrameStageTimer":
+        return cls(device, enabled=False)
+
+    def mark(self, label: str) -> None:
+        if not self.enabled:
+            return
+        with torch.cuda.device(self.device):
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+        self.events[label] = event
+
+    def elapsed(self, start: str, end: str) -> float:
+        if not self.enabled or start not in self.events or end not in self.events:
+            return 0.0
+        return float(self.events[start].elapsed_time(self.events[end]))
+
+    def to_timings(self) -> RestirFrameTimings:
+        if not self.enabled:
+            return RestirFrameTimings()
+        torch.cuda.synchronize(self.device)
+        return RestirFrameTimings(
+            render_rgbd_gpu_ms=self.elapsed("start", "after_render_rgbd"),
+            gbuffer_gpu_ms=self.elapsed("after_render_rgbd", "after_gbuffer"),
+            world_lights_to_camera_gpu_ms=self.elapsed("after_gbuffer", "after_world_lights_to_camera"),
+            reference_lighting_gpu_ms=self.elapsed("after_world_lights_to_camera", "after_reference_lighting"),
+            proposal_gpu_ms=self.elapsed("after_reference_lighting", "after_proposal"),
+            initial_ris_gpu_ms=self.elapsed("after_proposal", "after_initial_ris"),
+            temporal_lookup_gpu_ms=self.elapsed("after_initial_ris", "after_temporal_lookup"),
+            temporal_ris_gpu_ms=self.elapsed("after_temporal_lookup", "after_temporal_ris"),
+            temporal_filter_gpu_ms=self.elapsed("after_temporal_ris", "after_temporal_filter"),
+            frame_gpu_ms=self.elapsed("start", "after_temporal_filter"),
+        )
 
 
 def render_restir_frame(
@@ -114,10 +232,16 @@ def render_restir_frame(
     shadow_bundle: ShadowMapBundle | None = None,
 ) -> RestirFrameResult:
     """Render one frame and run the aligned diffuse ReSTIR baseline."""
+    wall_start = time.perf_counter()
+    timer = _FrameStageTimer(scene.means.device)
     with torch.no_grad():
+        timer.mark("start")
         render_buffers = render_rgbd(scene, camera)
+        timer.mark("after_render_rgbd")
         gbuffer = make_pseudo_gbuffer(render_buffers, camera)
+        timer.mark("after_gbuffer")
         lights = world_lights_to_camera_lights(world_lights, camera)
+        timer.mark("after_world_lights_to_camera")
         if settings.target_mode == "visibility" and shadow_bundle is None:
             target_world, scene_radius = _shadow_target_and_radius(scene.means, settings.visibility_shadow_bbox_percentile)
             shadow_bundle = make_shadow_map_bundle(
@@ -129,7 +253,7 @@ def render_restir_frame(
                 resolution=settings.visibility_shadow_resolution,
                 shadow_bias_scale=settings.visibility_shadow_bias_scale,
             )
-        return evaluate_restir_frame_from_gbuffer(
+        result = evaluate_restir_frame_from_gbuffer(
             gbuffer,
             camera,
             lights,
@@ -137,7 +261,35 @@ def render_restir_frame(
             settings=settings,
             previous_history=previous_history,
             shadow_bundle=shadow_bundle,
+            _timer=timer,
         )
+        timings = replace(result.timings, frame_wall_ms=(time.perf_counter() - wall_start) * 1000.0)
+        return replace(result, timings=timings)
+
+
+def evaluate_restir_display_frame_from_gbuffer(
+    gbuffer: GBuffer,
+    camera: PinholeCamera,
+    lights: PointLights,
+    frame_index: int,
+    settings: RestirRenderSettings = RestirRenderSettings(),
+    previous_history: RestirHistory | None = None,
+    shadow_bundle: ShadowMapBundle | None = None,
+    _timer: _FrameStageTimer | None = None,
+) -> RestirDisplayFrameResult:
+    """Run the display renderer path without computing an all-lights reference."""
+    display, _ = _evaluate_restir_frame_core(
+        gbuffer,
+        camera,
+        lights,
+        frame_index=frame_index,
+        settings=settings,
+        previous_history=previous_history,
+        shadow_bundle=shadow_bundle,
+        _timer=_timer,
+        include_reference=False,
+    )
+    return display
 
 
 def evaluate_restir_frame_from_gbuffer(
@@ -148,46 +300,100 @@ def evaluate_restir_frame_from_gbuffer(
     settings: RestirRenderSettings = RestirRenderSettings(),
     previous_history: RestirHistory | None = None,
     shadow_bundle: ShadowMapBundle | None = None,
+    _timer: _FrameStageTimer | None = None,
 ) -> RestirFrameResult:
-    """Run all-lights reference, geometric proposal, initial RIS, and temporal RIS on a prepared G-buffer."""
+    """Run the evaluation renderer path, including all-lights reference buffers."""
+    display, reference = _evaluate_restir_frame_core(
+        gbuffer,
+        camera,
+        lights,
+        frame_index=frame_index,
+        settings=settings,
+        previous_history=previous_history,
+        shadow_bundle=shadow_bundle,
+        _timer=_timer,
+        include_reference=True,
+    )
+    if reference is None:
+        raise RuntimeError("Internal renderer error: evaluation path did not produce a reference.")
+    return RestirFrameResult(
+        frame_index=display.frame_index,
+        camera=display.camera,
+        gbuffer=display.gbuffer,
+        lights=display.lights,
+        reference=reference,
+        proposal_samples=display.proposal_samples,
+        geometric_mc=display.geometric_mc,
+        initial=display.initial,
+        initial_reservoir=display.initial_reservoir,
+        temporal=display.temporal,
+        temporal_filtered=display.temporal_filtered,
+        temporal_reservoir=display.temporal_reservoir,
+        temporal_filter_stats=display.temporal_filter_stats,
+        lookup=display.lookup,
+        history=display.history,
+        shadow_bundle=display.shadow_bundle,
+        timings=display.timings,
+    )
+
+
+def _evaluate_restir_frame_core(
+    gbuffer: GBuffer,
+    camera: PinholeCamera,
+    lights: PointLights,
+    frame_index: int,
+    settings: RestirRenderSettings,
+    previous_history: RestirHistory | None,
+    shadow_bundle: ShadowMapBundle | None,
+    _timer: _FrameStageTimer | None,
+    include_reference: bool,
+) -> tuple[RestirDisplayFrameResult, LightingBuffers | None]:
+    timer = _timer or _FrameStageTimer.disabled(gbuffer.rgb.device)
     _check_settings(settings)
+    visibility_cache = None
+    reference = None
     if settings.target_mode == "visibility":
         if shadow_bundle is None:
             raise ValueError("Visibility target mode requires a ShadowMapBundle.")
-        reference = shade_deferred_lambertian_visible(
+        visibility_cache = make_shadow_visibility_cache(
             gbuffer,
             camera,
-            lights,
             shadow_bundle,
-            ambient=settings.ambient,
             alpha_threshold=settings.visibility_shadow_alpha_threshold,
             pcf_radius=settings.visibility_shadow_pcf_radius,
         )
-    else:
+        if include_reference:
+            reference = shade_deferred_lambertian_visible_cached(
+                gbuffer,
+                lights,
+                visibility_cache,
+                ambient=settings.ambient,
+            )
+    elif include_reference:
         reference = shade_deferred_lambertian(gbuffer, lights, ambient=settings.ambient)
-    valid_pixels = int(reference.valid_mask.sum().detach().cpu())
+    timer.mark("after_reference_lighting")
+    valid_mask = reference.valid_mask if reference is not None else (gbuffer.valid_mask & gbuffer.normal_mask)
+    valid_pixels = int(valid_mask.sum().detach().cpu())
     if valid_pixels <= 0:
         raise RuntimeError(f"Frame {frame_index} has no valid lighting pixels.")
 
-    proposal_distribution = _compute_proposal_distribution(gbuffer, camera, lights, shadow_bundle, settings)
+    proposal_distribution = _compute_proposal_distribution(gbuffer, camera, lights, shadow_bundle, settings, visibility_cache)
     samples = sample_light_candidates_from_distribution(
         proposal_distribution,
         settings.candidate_count,
         seed=settings.candidate_seed_base + frame_index,
         device=gbuffer.rgb.device,
     )
+    timer.mark("after_proposal")
     geometric_mc = None
     if settings.include_mc_baseline:
         if settings.target_mode == "visibility":
-            geometric_mc = estimate_visibility_proposal_lighting(
+            geometric_mc = estimate_visibility_proposal_lighting_cached(
                 gbuffer,
-                camera,
                 lights,
-                _require_shadow_bundle(shadow_bundle),
+                _require_visibility_cache(visibility_cache),
                 samples,
                 ambient=settings.ambient,
-                alpha_threshold=settings.visibility_shadow_alpha_threshold,
-                pcf_radius=settings.visibility_shadow_pcf_radius,
             )
         else:
             geometric_mc = estimate_proposal_lighting(
@@ -198,17 +404,14 @@ def evaluate_restir_frame_from_gbuffer(
                 target_mode="diffuse",
             )
     if settings.target_mode == "visibility":
-        initial, initial_reservoir = estimate_visibility_ris_initial_lighting(
+        initial, initial_reservoir = estimate_visibility_ris_initial_lighting_cached(
             gbuffer,
-            camera,
             lights,
-            _require_shadow_bundle(shadow_bundle),
+            _require_visibility_cache(visibility_cache),
             samples.light_indices,
             selection_seed=settings.initial_selection_seed_base + frame_index,
             ambient=settings.ambient,
             proposal_probs=samples.proposal_probs,
-            alpha_threshold=settings.visibility_shadow_alpha_threshold,
-            pcf_radius=settings.visibility_shadow_pcf_radius,
         )
     else:
         initial, initial_reservoir = estimate_ris_initial_lighting(
@@ -220,13 +423,17 @@ def evaluate_restir_frame_from_gbuffer(
             proposal_probs=samples.proposal_probs,
             target_mode="diffuse",
         )
+    timer.mark("after_initial_ris")
 
     if previous_history is None:
         lookup = empty_temporal_lookup(gbuffer)
+        timer.mark("after_temporal_lookup")
         temporal = initial
         temporal_reservoir = temporal_reservoir_from_initial(initial_reservoir)
+        timer.mark("after_temporal_ris")
         temporal_filtered = initial
         temporal_filter_stats = empty_temporal_filter_stats(gbuffer)
+        timer.mark("after_temporal_filter")
     else:
         lookup = reproject_current_to_previous(
             gbuffer,
@@ -239,6 +446,7 @@ def evaluate_restir_frame_from_gbuffer(
             max_motion_pixels=settings.temporal_max_motion_pixels,
             search_radius=settings.temporal_reprojection_search_radius,
         )
+        timer.mark("after_temporal_lookup")
         temporal, temporal_reservoir = combine_temporal_reservoirs(
             gbuffer,
             lights,
@@ -249,11 +457,12 @@ def evaluate_restir_frame_from_gbuffer(
             selection_seed=settings.temporal_selection_seed_base + frame_index,
             ambient=settings.ambient,
             target_mode="diffuse",
-            contribution_evaluator=_visibility_evaluator(gbuffer, camera, lights, shadow_bundle, settings)
+            contribution_evaluator=_visibility_evaluator(gbuffer, lights, visibility_cache)
             if settings.target_mode == "visibility"
             else None,
             history_m_cap=_effective_temporal_history_m_cap(settings),
         )
+        timer.mark("after_temporal_ris")
         temporal_filtered, temporal_filter_stats = apply_confidence_clamped_temporal_filter(
             gbuffer,
             initial,
@@ -261,14 +470,14 @@ def evaluate_restir_frame_from_gbuffer(
             lookup,
             settings,
         )
+        timer.mark("after_temporal_filter")
 
     history = RestirHistory(gbuffer=gbuffer, camera=camera, reservoir=temporal_reservoir, filtered=temporal_filtered)
-    return RestirFrameResult(
+    display = RestirDisplayFrameResult(
         frame_index=frame_index,
         camera=camera,
         gbuffer=gbuffer,
         lights=lights,
-        reference=reference,
         proposal_samples=samples,
         geometric_mc=geometric_mc,
         initial=initial,
@@ -280,13 +489,16 @@ def evaluate_restir_frame_from_gbuffer(
         lookup=lookup,
         history=history,
         shadow_bundle=shadow_bundle,
+        timings=timer.to_timings(),
     )
+    return display, reference
 
 
 def make_restir_metric_rows(
     asset_id: str,
     result: RestirFrameResult,
     settings: RestirRenderSettings,
+    shadow_bundle_asset_gpu_ms: float | None = None,
 ) -> list[dict[str, int | float | str]]:
     valid_mask = result.reference.valid_mask
     valid_pixels = int(valid_mask.sum().detach().cpu())
@@ -318,6 +530,7 @@ def make_restir_metric_rows(
     filter_alpha_max = float(result.temporal_filter_stats.alpha.detach().cpu().max()) if result.temporal_filter_stats.alpha.numel() else 0.0
     filter_history_delta_mean = masked_mean(result.temporal_filter_stats.history_delta, result.lookup.valid_mask)
     filter_clamp_delta_mean = masked_mean(result.temporal_filter_stats.clamp_delta, result.lookup.valid_mask)
+    timing_fields = result.timings.as_row_fields(shadow_bundle_asset_gpu_ms)
 
     rows: list[dict[str, int | float | str]] = []
     for estimator, buffers, reservoir in (
@@ -384,6 +597,7 @@ def make_restir_metric_rows(
                 "reservoir_m_mean": m_mean,
                 "reservoir_m_max": m_max,
             }
+            row.update(timing_fields)
             row.update(compute_rgb_error_metrics(estimate, reference, valid_mask))
             rows.append(row)
     return rows
@@ -421,6 +635,17 @@ def summarize_restir_rows(rows: list[dict[str, int | float | str]]) -> list[dict
             }
         )
     return summary
+
+
+def summarize_restir_timing_rows(rows: list[dict[str, int | float | str]]) -> dict[str, dict[str, float | int]]:
+    return _summarize_timing_group(rows)
+
+
+def summarize_restir_asset_timing_rows(rows: list[dict[str, int | float | str]]) -> dict[str, dict[str, dict[str, float | int]]]:
+    groups: dict[str, list[dict[str, int | float | str]]] = {}
+    for row in rows:
+        groups.setdefault(str(row["asset_id"]), []).append(row)
+    return {asset_id: _summarize_timing_group(group) for asset_id, group in sorted(groups.items())}
 
 
 def empty_temporal_lookup(gbuffer: GBuffer) -> TemporalLookup:
@@ -610,6 +835,18 @@ def _mean(values: list[float]) -> float:
     return sum(values) / float(len(values)) if values else 0.0
 
 
+def _summarize_timing_group(rows: list[dict[str, int | float | str]]) -> dict[str, dict[str, float | int]]:
+    summary: dict[str, dict[str, float | int]] = {}
+    for field in RESTIR_TIMING_FIELDS:
+        values = [float(row[field]) for row in rows if field in row and math.isfinite(float(row[field]))]
+        summary[field] = {
+            "mean": _mean(values),
+            "max": max(values) if values else 0.0,
+            "count": len(values),
+        }
+    return summary
+
+
 def _format_optional_float(value: float | None) -> float | str:
     return "none" if value is None else float(value)
 
@@ -624,16 +861,29 @@ def _require_shadow_bundle(shadow_bundle: ShadowMapBundle | None) -> ShadowMapBu
     return shadow_bundle
 
 
+def _require_visibility_cache(visibility_cache: ShadowVisibilityCache | None) -> ShadowVisibilityCache:
+    if visibility_cache is None:
+        raise ValueError("Visibility target mode requires a ShadowVisibilityCache.")
+    return visibility_cache
+
+
 def _compute_proposal_distribution(
     gbuffer: GBuffer,
     camera: PinholeCamera,
     lights: PointLights,
     shadow_bundle: ShadowMapBundle | None,
     settings: RestirRenderSettings,
+    visibility_cache: ShadowVisibilityCache | None = None,
 ) -> torch.Tensor:
     if settings.target_mode == "diffuse":
         return compute_geometric_proposal_distribution(gbuffer, lights)
     if settings.target_mode == "visibility":
+        if visibility_cache is not None:
+            return compute_visibility_geometric_proposal_distribution_cached(
+                gbuffer,
+                lights,
+                visibility_cache,
+            )
         return compute_visibility_geometric_proposal_distribution(
             gbuffer,
             camera,
@@ -653,22 +903,17 @@ def _effective_proposal(settings: RestirRenderSettings) -> str:
 
 def _visibility_evaluator(
     gbuffer: GBuffer,
-    camera: PinholeCamera,
     lights: PointLights,
-    shadow_bundle: ShadowMapBundle | None,
-    settings: RestirRenderSettings,
+    visibility_cache: ShadowVisibilityCache | None,
 ):
-    bundle = _require_shadow_bundle(shadow_bundle)
+    cache = _require_visibility_cache(visibility_cache)
 
     def evaluate(light_indices: torch.Tensor) -> torch.Tensor:
-        return evaluate_selected_light_visible_diffuse(
+        return evaluate_selected_light_visible_diffuse_cached(
             gbuffer,
-            camera,
             lights,
-            bundle,
+            cache,
             light_indices,
-            alpha_threshold=settings.visibility_shadow_alpha_threshold,
-            pcf_radius=settings.visibility_shadow_pcf_radius,
         )
 
     return evaluate

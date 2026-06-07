@@ -22,6 +22,14 @@ class ShadowMapBundle:
     depth_bias: float
 
 
+@dataclass(frozen=True)
+class ShadowVisibilityCache:
+    light_indices: torch.Tensor
+    visibility: torch.Tensor
+    alpha_threshold: float
+    pcf_radius: int
+
+
 def make_shadow_map_bundle(
     scene: SyntheticGaussians,
     world_light_positions: torch.Tensor,
@@ -89,6 +97,63 @@ def make_shadow_map_bundle(
     )
 
 
+def make_shadow_visibility_cache(
+    gbuffer: GBuffer,
+    camera: PinholeCamera,
+    shadow_bundle: ShadowMapBundle,
+    alpha_threshold: float = 1e-4,
+    pcf_radius: int = 0,
+) -> ShadowVisibilityCache:
+    """Cache all-light shadow visibility for one frame.
+
+    The cache is intentionally small for the active renderer: ``[H, W, N]``
+    visibility for the current G-buffer and current shadow-map bundle.
+    """
+    if alpha_threshold < 0.0:
+        raise ValueError(f"Expected non-negative alpha_threshold, got {alpha_threshold}")
+    if pcf_radius < 0:
+        raise ValueError(f"Expected non-negative pcf_radius, got {pcf_radius}")
+    light_indices = shadow_bundle.light_indices.to(device=gbuffer.rgb.device, dtype=torch.long)
+    height, width = gbuffer.depth.shape
+    all_indices = light_indices.reshape(1, 1, -1).expand(height, width, light_indices.numel())
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow_bundle,
+        all_indices,
+        alpha_threshold=alpha_threshold,
+        pcf_radius=pcf_radius,
+    ).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
+    return ShadowVisibilityCache(
+        light_indices=light_indices,
+        visibility=visibility,
+        alpha_threshold=float(alpha_threshold),
+        pcf_radius=int(pcf_radius),
+    )
+
+
+def gather_shadow_visibility(cache: ShadowVisibilityCache, light_indices: torch.Tensor) -> torch.Tensor:
+    """Gather cached visibility for selected light indices shaped ``[H,W,K]``."""
+    if light_indices.ndim != 3:
+        raise ValueError(f"Expected light_indices shape [H,W,K], got {tuple(light_indices.shape)}")
+    if light_indices.shape[:2] != cache.visibility.shape[:2]:
+        raise ValueError(f"Expected light index image shape {tuple(cache.visibility.shape[:2])}, got {tuple(light_indices.shape[:2])}")
+    device = cache.visibility.device
+    indices = light_indices.to(device=device, dtype=torch.long)
+    if _cache_has_dense_indices(cache):
+        safe = indices.clamp(0, max(cache.visibility.shape[-1] - 1, 0))
+        valid = (indices >= 0) & (indices < cache.visibility.shape[-1])
+        gathered = torch.gather(cache.visibility, dim=-1, index=safe)
+        return torch.where(valid, gathered, torch.zeros_like(gathered))
+
+    out = torch.zeros((*indices.shape[:2], indices.shape[2]), dtype=cache.visibility.dtype, device=device)
+    for slot, light_id in enumerate(cache.light_indices.to(device=device, dtype=torch.long)):
+        mask = indices == int(light_id.detach().cpu())
+        if bool(mask.any()):
+            out = torch.where(mask, cache.visibility[..., slot, None], out)
+    return out
+
+
 def make_light_camera(
     light_position_world: torch.Tensor,
     target_world: torch.Tensor,
@@ -146,6 +211,33 @@ def evaluate_shadow_visibility(
     if len(shadow_bundle.light_cameras) != int(shadow_bundle.light_indices.numel()):
         raise ValueError("Shadow bundle light camera count must match light_indices length.")
 
+    if _shadow_bundle_has_dense_indices(shadow_bundle):
+        return _evaluate_shadow_visibility_dense(
+            gbuffer,
+            camera,
+            shadow_bundle,
+            light_indices,
+            alpha_threshold=alpha_threshold,
+            pcf_radius=pcf_radius,
+        )
+    return _evaluate_shadow_visibility_loop(
+        gbuffer,
+        camera,
+        shadow_bundle,
+        light_indices,
+        alpha_threshold=alpha_threshold,
+        pcf_radius=pcf_radius,
+    )
+
+
+def _evaluate_shadow_visibility_loop(
+    gbuffer: GBuffer,
+    camera: PinholeCamera,
+    shadow_bundle: ShadowMapBundle,
+    light_indices: torch.Tensor,
+    alpha_threshold: float,
+    pcf_radius: int,
+) -> torch.Tensor:
     height, width, candidate_count = light_indices.shape
     device = gbuffer.rgb.device
     dtype = gbuffer.rgb.dtype
@@ -171,6 +263,89 @@ def evaluate_shadow_visibility(
         )
         visibility = torch.where(candidate_mask, light_visibility[..., None], visibility)
     return visibility
+
+
+def _evaluate_shadow_visibility_dense(
+    gbuffer: GBuffer,
+    camera: PinholeCamera,
+    shadow_bundle: ShadowMapBundle,
+    light_indices: torch.Tensor,
+    alpha_threshold: float,
+    pcf_radius: int,
+) -> torch.Tensor:
+    """Vectorized visibility path for dense shadow-map bundles with indices [0..N-1]."""
+    height, width, candidate_count = light_indices.shape
+    light_count = int(shadow_bundle.light_indices.numel())
+    device = gbuffer.rgb.device
+    dtype = gbuffer.rgb.dtype
+    if light_count == 0:
+        return torch.zeros((height, width, candidate_count), dtype=dtype, device=device)
+
+    valid = (gbuffer.valid_mask & gbuffer.normal_mask).to(device=device)
+    world_positions = _gbuffer_world_positions(gbuffer, camera, dtype=dtype, device=device)
+    ones = torch.ones((*world_positions.shape[:2], 1), dtype=dtype, device=device)
+    world_h = torch.cat((world_positions, ones), dim=-1)
+
+    viewmats = torch.stack([light_camera.viewmats[0].to(device=device, dtype=dtype) for light_camera in shadow_bundle.light_cameras], dim=0)
+    intrinsics = torch.stack([light_camera.intrinsics[0].to(device=device, dtype=dtype) for light_camera in shadow_bundle.light_cameras], dim=0)
+    light_h = torch.einsum("lij,hwj->lhwi", viewmats, world_h)
+    light_z = light_h[..., 2]
+    tiny = torch.finfo(dtype).tiny
+    u = light_h[..., 0] * intrinsics[:, 0, 0, None, None] / light_z.clamp_min(tiny) + intrinsics[:, 0, 2, None, None]
+    v = light_h[..., 1] * intrinsics[:, 1, 1, None, None] / light_z.clamp_min(tiny) + intrinsics[:, 1, 2, None, None]
+    x_all = torch.round(u).to(torch.long).permute(1, 2, 0)
+    y_all = torch.round(v).to(torch.long).permute(1, 2, 0)
+    z_all = light_z.permute(1, 2, 0)
+
+    selected = light_indices.to(device=device, dtype=torch.long)
+    valid_slot = (selected >= 0) & (selected < light_count)
+    safe_selected = selected.clamp(0, max(light_count - 1, 0))
+    x = torch.gather(x_all, dim=-1, index=safe_selected)
+    y = torch.gather(y_all, dim=-1, index=safe_selected)
+    selected_z = torch.gather(z_all, dim=-1, index=safe_selected)
+
+    shadow_depth = shadow_bundle.depth_maps.to(device=device, dtype=dtype)
+    shadow_alpha = shadow_bundle.alpha_maps.to(device=device, dtype=dtype)
+    shadow_height, shadow_width = shadow_depth.shape[-2:]
+    in_bounds = (x >= 0) & (x < shadow_width) & (y >= 0) & (y < shadow_height)
+
+    if pcf_radius == 0:
+        return _hard_shadow_compare_dense(
+            safe_selected,
+            valid_slot,
+            x,
+            y,
+            selected_z,
+            valid,
+            in_bounds,
+            shadow_depth,
+            shadow_alpha,
+            shadow_bundle.depth_bias,
+            alpha_threshold,
+        ).to(dtype=dtype)
+
+    visibility_sum = torch.zeros((height, width, candidate_count), dtype=dtype, device=device)
+    sample_count = 0
+    for dy in range(-pcf_radius, pcf_radius + 1):
+        for dx in range(-pcf_radius, pcf_radius + 1):
+            sample_x = x + dx
+            sample_y = y + dy
+            sample_in_bounds = (sample_x >= 0) & (sample_x < shadow_width) & (sample_y >= 0) & (sample_y < shadow_height)
+            visibility_sum = visibility_sum + _hard_shadow_compare_dense(
+                safe_selected,
+                valid_slot,
+                sample_x,
+                sample_y,
+                selected_z,
+                valid,
+                sample_in_bounds,
+                shadow_depth,
+                shadow_alpha,
+                shadow_bundle.depth_bias,
+                alpha_threshold,
+            ).to(dtype=dtype)
+            sample_count += 1
+    return visibility_sum / float(sample_count)
 
 
 def evaluate_selected_light_visible_diffuse(
@@ -200,6 +375,26 @@ def evaluate_selected_light_visible_diffuse(
         alpha_threshold=alpha_threshold,
         pcf_radius=pcf_radius,
     )
+    return diffuse * visibility[..., None]
+
+
+def evaluate_selected_light_visible_diffuse_cached(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    visibility_cache: ShadowVisibilityCache,
+    light_indices: torch.Tensor,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> torch.Tensor:
+    """Evaluate selected-light visible diffuse using a frame-local visibility cache."""
+    diffuse = evaluate_selected_light_diffuse(
+        gbuffer,
+        lights,
+        light_indices,
+        two_sided=two_sided,
+        distance_epsilon=distance_epsilon,
+    )
+    visibility = gather_shadow_visibility(visibility_cache, light_indices)
     return diffuse * visibility[..., None]
 
 
@@ -238,6 +433,64 @@ def shade_deferred_lambertian_visible(
             light_indices,
             alpha_threshold=alpha_threshold,
             pcf_radius=pcf_radius,
+            two_sided=two_sided,
+            distance_epsilon=distance_epsilon,
+        ).sum(dim=2).reshape(-1, 3)
+
+    valid_mask = gbuffer.valid_mask & gbuffer.normal_mask
+    diffuse_rgb = torch.where(valid_mask[..., None], visible_flat.reshape_as(gbuffer.rgb), torch.zeros_like(gbuffer.rgb))
+    dynamic_shade = torch.where(
+        gbuffer.rgb.abs() > 1e-8,
+        diffuse_rgb / torch.clamp(gbuffer.rgb, min=1e-8),
+        torch.zeros_like(gbuffer.rgb),
+    )
+    composite_lit = gbuffer.rgb * float(ambient) + diffuse_rgb
+    composite_rgb = torch.where(valid_mask[..., None], composite_lit, gbuffer.rgb)
+    shade_rgb = torch.where(
+        valid_mask[..., None],
+        torch.full_like(gbuffer.rgb, float(ambient)) + dynamic_shade,
+        torch.zeros_like(gbuffer.rgb),
+    )
+    return LightingBuffers(
+        irradiance_rgb=dynamic_shade * math.pi,
+        diffuse_rgb=diffuse_rgb,
+        specular_rgb=torch.zeros_like(diffuse_rgb),
+        shade_rgb=shade_rgb,
+        composite_rgb=composite_rgb,
+        valid_mask=valid_mask,
+    )
+
+
+def shade_deferred_lambertian_visible_cached(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    visibility_cache: ShadowVisibilityCache,
+    ambient: float = 0.2,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+    chunk_size: int = 64,
+) -> LightingBuffers:
+    """Evaluate all-lights Lambertian lighting using a frame-local visibility cache."""
+    if chunk_size <= 0:
+        raise ValueError(f"Expected positive chunk size, got {chunk_size}")
+    light_count = lights.positions_cam.shape[0]
+    expected = torch.arange(light_count, dtype=torch.long, device=visibility_cache.light_indices.device)
+    if visibility_cache.light_indices.shape != (light_count,) or not torch.equal(
+        visibility_cache.light_indices.to(dtype=torch.long),
+        expected,
+    ):
+        raise ValueError("Cached all-lights visible Lambertian requires one cached visibility layer per light in index order.")
+    device = gbuffer.rgb.device
+    visible_flat = torch.zeros_like(gbuffer.rgb.reshape(-1, 3))
+    for start in range(0, light_count, chunk_size):
+        end = min(start + chunk_size, light_count)
+        light_indices = torch.arange(start, end, dtype=torch.long, device=device)
+        light_indices = light_indices.expand(gbuffer.rgb.shape[0], gbuffer.rgb.shape[1], end - start)
+        visible_flat += evaluate_selected_light_visible_diffuse_cached(
+            gbuffer,
+            lights,
+            visibility_cache,
+            light_indices,
             two_sided=two_sided,
             distance_epsilon=distance_epsilon,
         ).sum(dim=2).reshape(-1, 3)
@@ -347,6 +600,32 @@ def _visibility_for_shadow_slot(
     return visibility_sum / float(sample_count)
 
 
+def _hard_shadow_compare_dense(
+    light_slots: torch.Tensor,
+    valid_slots: torch.Tensor,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    light_z: torch.Tensor,
+    valid_mask: torch.Tensor,
+    in_bounds: torch.Tensor,
+    shadow_depth: torch.Tensor,
+    shadow_alpha: torch.Tensor,
+    depth_bias: float,
+    alpha_threshold: float,
+) -> torch.Tensor:
+    light_count, height, width = shadow_depth.shape
+    safe_x = x.clamp(0, max(width - 1, 0))
+    safe_y = y.clamp(0, max(height - 1, 0))
+    flat = safe_y * width + safe_x
+    depth_flat = shadow_depth.reshape(light_count, -1)
+    alpha_flat = shadow_alpha.reshape(light_count, -1)
+    sampled_depth = depth_flat[light_slots.reshape(-1), flat.reshape(-1)].reshape(light_z.shape)
+    sampled_alpha = alpha_flat[light_slots.reshape(-1), flat.reshape(-1)].reshape(light_z.shape)
+    no_blocker = sampled_alpha <= float(alpha_threshold)
+    depth_pass = light_z <= sampled_depth + float(depth_bias)
+    return valid_slots & valid_mask[..., None] & in_bounds & (light_z > 0.0) & (no_blocker | depth_pass)
+
+
 def _hard_shadow_compare(
     x: torch.Tensor,
     y: torch.Tensor,
@@ -367,3 +646,15 @@ def _hard_shadow_compare(
     no_blocker = sampled_alpha <= float(alpha_threshold)
     depth_pass = light_z <= sampled_depth + float(depth_bias)
     return valid_mask & in_bounds & (light_z > 0.0) & (no_blocker | depth_pass)
+
+
+def _shadow_bundle_has_dense_indices(shadow_bundle: ShadowMapBundle) -> bool:
+    if len(shadow_bundle.light_cameras) != int(shadow_bundle.light_indices.numel()):
+        return False
+    expected = torch.arange(shadow_bundle.light_indices.numel(), dtype=torch.long, device=shadow_bundle.light_indices.device)
+    return bool(torch.equal(shadow_bundle.light_indices.to(dtype=torch.long), expected))
+
+
+def _cache_has_dense_indices(cache: ShadowVisibilityCache) -> bool:
+    expected = torch.arange(cache.light_indices.numel(), dtype=torch.long, device=cache.light_indices.device)
+    return bool(torch.equal(cache.light_indices.to(dtype=torch.long), expected))

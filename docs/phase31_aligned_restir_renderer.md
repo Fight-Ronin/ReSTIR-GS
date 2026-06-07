@@ -76,13 +76,13 @@ $env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
 scripts\run_interactive_viewer_windows.bat
 ```
 
-Press `4` for the single-frame ReSTIR inspection panel:
+Earlier viewer builds exposed a `4`-key single-frame ReSTIR inspection panel:
 
 ```text
 reference / geometric MC / initial RIS / initial error / proposal max / alpha
 ```
 
-The viewer remains a debug tool. Temporal carry is inspected through the renderer contact sheets, not through live UI state.
+The current live viewer uses the layer triggers documented in `docs/phase25_interactive_viewer.md`. The viewer remains a debug tool. Temporal carry is inspected through the renderer contact sheets, not through live UI state.
 
 ## Limits
 
