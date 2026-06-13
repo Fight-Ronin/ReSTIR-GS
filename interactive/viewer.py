@@ -263,6 +263,8 @@ class InteractiveViewer:
         shift = isinstance(event.key, str) and "shift" in event.key.lower()
         if event.button == 2 or (event.button == 1 and shift):
             self.drag_mode = "pan"
+        elif event.button == 3:
+            self.drag_mode = "look"
         elif event.button == 1:
             self.drag_mode = "orbit"
         else:
@@ -282,6 +284,8 @@ class InteractiveViewer:
         self.drag_start = (float(event.x), float(event.y))
         if self.drag_mode == "orbit":
             self.session.orbit(delta_yaw_degrees=dx * 0.25, delta_pitch_degrees=-dy * 0.25)
+        elif self.drag_mode == "look":
+            self.session.look(delta_yaw_degrees=dx * 0.25, delta_pitch_degrees=-dy * 0.25)
         else:
             state = self.session.state
             pan_scale = state.radius / float(max(state.width, state.height))

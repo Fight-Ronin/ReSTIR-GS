@@ -5,6 +5,8 @@ import math
 import pytest
 import torch
 
+import restir_gs.restir.renderer as renderer_module
+import restir_gs.restir.visibility as restir_visibility_module
 from restir_gs.lighting.deferred import PointLights
 from restir_gs.lighting.visibility import ShadowMapBundle
 from restir_gs.render.gbuffer import GBuffer
@@ -320,6 +322,31 @@ def test_visibility_target_uses_visibility_geometric_proposal_by_default() -> No
     assert {int(row["temporal_history_m_cap"]) for row in rows} == {settings.candidate_count}
     assert {int(row["visibility_shadow_pcf_radius"]) for row in rows} == {1}
     assert all_numeric_finite(rows)
+
+
+def test_visibility_target_reuses_selected_light_contributions(monkeypatch) -> None:
+    call_count = 0
+    original = renderer_module.evaluate_selected_light_visible_diffuse_cached
+
+    def wrapped(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(renderer_module, "evaluate_selected_light_visible_diffuse_cached", wrapped)
+    monkeypatch.setattr(restir_visibility_module, "evaluate_selected_light_visible_diffuse_cached", wrapped)
+
+    settings = RestirRenderSettings(target_mode="visibility", candidate_count=2, include_mc_baseline=True)
+    evaluate_restir_frame_from_gbuffer(
+        make_gbuffer(),
+        make_camera(),
+        make_lights(),
+        frame_index=2,
+        settings=settings,
+        shadow_bundle=make_shadow_bundle(),
+    )
+
+    assert call_count == 1
 
 
 def test_diffuse_target_keeps_geometric_proposal() -> None:

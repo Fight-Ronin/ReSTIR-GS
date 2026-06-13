@@ -24,7 +24,7 @@ VIEWER_VIEW_LABELS = {layer.value: layer.label for layer in VIEW_LAYERS}
 VIEWER_VIEW_KEYS = tuple((layer.key, layer.label, layer.value) for layer in VIEW_LAYERS)
 VIEWER_VIEW_ACCENTS = {layer.value: layer.accent for layer in VIEW_LAYERS}
 VIEWER_VIEW_HELP = "1 RGB  |  2 Alpha  |  3 Depth  |  4 Normal  |  5 Lambertian  |  6 Blinn-Phong"
-VIEWER_CONTROL_HELP = "WASD move  |  Shift/Ctrl up/down  |  Left drag orbit  |  Shift/middle drag pan  |  Wheel dolly  |  [ ] frame  |  r reset  |  Ctrl+S save  |  q quit"
+VIEWER_CONTROL_HELP = "WASD move  |  Shift/Ctrl up/down  |  Left drag orbit  |  Right drag look  |  Shift/middle drag pan  |  Wheel dolly  |  [ ] frame  |  r reset  |  Ctrl+S save  |  q quit"
 
 
 def view_from_key(key: str) -> str | None:

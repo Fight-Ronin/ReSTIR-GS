@@ -3,7 +3,13 @@ from __future__ import annotations
 import torch
 
 from restir_gs.lighting.deferred import PointLights
-from restir_gs.lighting.visibility import ShadowMapBundle, make_shadow_visibility_cache, shade_deferred_lambertian_visible, shade_deferred_lambertian_visible_cached
+from restir_gs.lighting.visibility import (
+    ShadowMapBundle,
+    evaluate_selected_light_visible_diffuse_cached,
+    make_shadow_visibility_cache,
+    shade_deferred_lambertian_visible,
+    shade_deferred_lambertian_visible_cached,
+)
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 from restir_gs.restir.initial import estimate_proposal_lighting
@@ -126,16 +132,39 @@ def test_cached_visibility_paths_match_uncached_paths() -> None:
         proposal_probs=samples.proposal_probs,
         selection_seed=23,
     )
+    contribution_candidates = evaluate_selected_light_visible_diffuse_cached(gbuffer, lights, cache, samples.light_indices)
+    reused_mc = estimate_visibility_proposal_lighting_cached(
+        gbuffer,
+        lights,
+        cache,
+        samples,
+        contribution_candidates=contribution_candidates,
+    )
+    reused_ris, reused_reservoir = estimate_visibility_ris_initial_lighting_cached(
+        gbuffer,
+        lights,
+        cache,
+        samples.light_indices,
+        proposal_probs=samples.proposal_probs,
+        selection_seed=23,
+        contribution_candidates=contribution_candidates,
+    )
 
     assert torch.allclose(cached_reference.diffuse_rgb, reference.diffuse_rgb)
     assert torch.allclose(cached_reference.composite_rgb, reference.composite_rgb)
     assert torch.allclose(cached_proposal, proposal)
     assert torch.allclose(cached_mc.contribution_rgb, mc.contribution_rgb)
     assert torch.allclose(cached_mc.composite_rgb, mc.composite_rgb)
+    assert torch.allclose(reused_mc.contribution_rgb, cached_mc.contribution_rgb)
+    assert torch.allclose(reused_mc.composite_rgb, cached_mc.composite_rgb)
     assert torch.allclose(cached_ris.contribution_rgb, ris.contribution_rgb)
     assert torch.allclose(cached_ris.composite_rgb, ris.composite_rgb)
+    assert torch.allclose(reused_ris.contribution_rgb, cached_ris.contribution_rgb)
+    assert torch.allclose(reused_ris.composite_rgb, cached_ris.composite_rgb)
     assert torch.equal(cached_reservoir.light_indices, reservoir.light_indices)
     assert torch.allclose(cached_reservoir.W, reservoir.W)
+    assert torch.equal(reused_reservoir.light_indices, cached_reservoir.light_indices)
+    assert torch.allclose(reused_reservoir.W, cached_reservoir.W)
 
 
 def test_invalid_pixels_produce_zero_visible_proposal_contribution() -> None:

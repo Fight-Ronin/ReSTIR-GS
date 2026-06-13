@@ -196,8 +196,8 @@ def evaluate_shadow_visibility(
 ) -> torch.Tensor:
     """Evaluate shadow-map visibility for selected world-light indices shaped [H,W,K].
 
-    ``pcf_radius=0`` uses the legacy single nearest shadow texel. Positive radii
-    average hard shadow comparisons over a square PCF kernel and return soft
+    ``pcf_radius=0`` uses a single nearest shadow texel. Positive radii average
+    opacity-aware shadow comparisons over a square PCF kernel and return soft
     visibility in ``[0, 1]``.
     """
     if alpha_threshold < 0.0:
@@ -621,9 +621,10 @@ def _hard_shadow_compare_dense(
     alpha_flat = shadow_alpha.reshape(light_count, -1)
     sampled_depth = depth_flat[light_slots.reshape(-1), flat.reshape(-1)].reshape(light_z.shape)
     sampled_alpha = alpha_flat[light_slots.reshape(-1), flat.reshape(-1)].reshape(light_z.shape)
-    no_blocker = sampled_alpha <= float(alpha_threshold)
     depth_pass = light_z <= sampled_depth + float(depth_bias)
-    return valid_slots & valid_mask[..., None] & in_bounds & (light_z > 0.0) & (no_blocker | depth_pass)
+    valid = valid_slots & valid_mask[..., None] & in_bounds & (light_z > 0.0)
+    visibility = _opacity_aware_shadow_visibility(sampled_alpha, depth_pass, alpha_threshold)
+    return torch.where(valid, visibility, torch.zeros_like(visibility))
 
 
 def _hard_shadow_compare(
@@ -643,9 +644,22 @@ def _hard_shadow_compare(
     flat = safe_y * width + safe_x
     sampled_depth = shadow_depth.reshape(-1)[flat.reshape(-1)].reshape(light_z.shape)
     sampled_alpha = shadow_alpha.reshape(-1)[flat.reshape(-1)].reshape(light_z.shape)
-    no_blocker = sampled_alpha <= float(alpha_threshold)
     depth_pass = light_z <= sampled_depth + float(depth_bias)
-    return valid_mask & in_bounds & (light_z > 0.0) & (no_blocker | depth_pass)
+    valid = valid_mask & in_bounds & (light_z > 0.0)
+    visibility = _opacity_aware_shadow_visibility(sampled_alpha, depth_pass, alpha_threshold)
+    return torch.where(valid, visibility, torch.zeros_like(visibility))
+
+
+def _opacity_aware_shadow_visibility(
+    sampled_alpha: torch.Tensor,
+    depth_pass: torch.Tensor,
+    alpha_threshold: float,
+) -> torch.Tensor:
+    threshold = float(alpha_threshold)
+    denom = max(1.0 - threshold, torch.finfo(sampled_alpha.dtype).eps)
+    blocker_opacity = ((sampled_alpha - threshold) / denom).clamp(0.0, 1.0)
+    blocked_visibility = 1.0 - blocker_opacity
+    return torch.where(depth_pass, torch.ones_like(blocked_visibility), blocked_visibility)
 
 
 def _shadow_bundle_has_dense_indices(shadow_bundle: ShadowMapBundle) -> bool:

@@ -69,16 +69,18 @@ def estimate_visibility_proposal_lighting_cached(
     ambient: float = 0.2,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
+    contribution_candidates: torch.Tensor | None = None,
 ) -> VisibilityEstimatorBuffers:
     """Estimate visibility-aware direct diffuse from cached frame visibility."""
     _check_samples(samples)
-    candidates = evaluate_selected_light_visible_diffuse_cached(
+    candidates = _cached_contribution_candidates(
         gbuffer,
         lights,
         visibility_cache,
         samples.light_indices,
-        two_sided=two_sided,
-        distance_epsilon=distance_epsilon,
+        two_sided,
+        distance_epsilon,
+        contribution_candidates,
     )
     proposal_probs = samples.proposal_probs.to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
     weighted = candidates / proposal_probs.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)[..., None]
@@ -190,6 +192,7 @@ def estimate_visibility_ris_initial_lighting_cached(
     proposal_probs: torch.Tensor | None = None,
     two_sided: bool = True,
     distance_epsilon: float = 1e-4,
+    contribution_candidates: torch.Tensor | None = None,
 ) -> tuple[LightingEstimatorBuffers, ReservoirState]:
     """Estimate visibility-aware initial RIS from cached frame visibility."""
     if candidates.ndim != 3:
@@ -199,13 +202,14 @@ def estimate_visibility_ris_initial_lighting_cached(
 
     height, width, candidate_count = candidates.shape
     light_count = lights.positions_cam.shape[0]
-    contribution_candidates = evaluate_selected_light_visible_diffuse_cached(
+    contribution_candidates = _cached_contribution_candidates(
         gbuffer,
         lights,
         visibility_cache,
         candidates,
-        two_sided=two_sided,
-        distance_epsilon=distance_epsilon,
+        two_sided,
+        distance_epsilon,
+        contribution_candidates,
     )
     target_values = _luminance(contribution_candidates).clamp_min(0.0)
     if proposal_probs is None:
@@ -269,6 +273,30 @@ def _check_samples(samples: CandidateSamples) -> None:
         raise ValueError(
             f"Expected proposal probs shape {tuple(samples.light_indices.shape)}, got {tuple(samples.proposal_probs.shape)}"
         )
+
+
+def _cached_contribution_candidates(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    visibility_cache: ShadowVisibilityCache,
+    candidates: torch.Tensor,
+    two_sided: bool,
+    distance_epsilon: float,
+    contribution_candidates: torch.Tensor | None,
+) -> torch.Tensor:
+    if contribution_candidates is None:
+        return evaluate_selected_light_visible_diffuse_cached(
+            gbuffer,
+            lights,
+            visibility_cache,
+            candidates,
+            two_sided=two_sided,
+            distance_epsilon=distance_epsilon,
+        )
+    expected_shape = (*candidates.shape, 3)
+    if contribution_candidates.shape != expected_shape:
+        raise ValueError(f"Expected contribution candidates shape {expected_shape}, got {tuple(contribution_candidates.shape)}")
+    return contribution_candidates.to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
 
 
 def _luminance(rgb: torch.Tensor) -> torch.Tensor:

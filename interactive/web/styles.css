@@ -21,6 +21,10 @@
   --view-active-bg: #20352f;
   --viewport-matte: #07090c;
   --viewport-line: #2a3340;
+  --hud-bg: rgba(12, 15, 18, 0.48);
+  --hud-line: rgba(255, 255, 255, 0.10);
+  --hud-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  --ramp: linear-gradient(90deg, #14181d, #eef3f7);
 }
 
 :root[data-view="alpha"] {
@@ -28,6 +32,7 @@
   --view-active-bg: #302513;
   --viewport-matte: #000000;
   --viewport-line: #242c35;
+  --ramp: linear-gradient(90deg, #000000, #f6f8fb);
 }
 
 :root[data-view="depth"] {
@@ -35,6 +40,7 @@
   --view-active-bg: #17243a;
   --viewport-matte: #000000;
   --viewport-line: #253246;
+  --ramp: linear-gradient(90deg, #101823, #244b7a, #8ed4ff);
 }
 
 :root[data-view="normal"] {
@@ -42,6 +48,7 @@
   --view-active-bg: #231c35;
   --viewport-matte: #000000;
   --viewport-line: #332f4a;
+  --ramp: linear-gradient(90deg, #ec6d8f, #7aa7ff, #81d47d);
 }
 
 :root[data-view="lambertian"] {
@@ -92,6 +99,7 @@ button.active {
   background: var(--view-active-bg);
   color: var(--text);
   font-weight: 700;
+  box-shadow: inset 2px 0 0 var(--view-accent);
 }
 
 .shell {
@@ -221,25 +229,28 @@ h1 {
 .view-badge,
 .frame-badge,
 .viewport-readout,
-.busy {
+.busy,
+.view-overlay,
+.interaction-feedback {
   backdrop-filter: blur(8px);
-  background: rgba(13, 15, 18, 0.78);
-  border: 1px solid color-mix(in srgb, var(--view-accent) 38%, transparent);
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-line);
   border-radius: 6px;
   color: var(--text);
+  box-shadow: var(--hud-shadow);
 }
 
 .view-badge {
   color: var(--view-accent);
   font-size: 12px;
   font-weight: 800;
-  padding: 6px 9px;
+  padding: 5px 8px;
 }
 
 .frame-badge {
   color: var(--soft);
   font-size: 12px;
-  padding: 6px 9px;
+  padding: 5px 8px;
 }
 
 .viewport-readout {
@@ -259,9 +270,72 @@ h1 {
   color: var(--view-accent);
   font-size: 12px;
   left: 14px;
-  padding: 6px 10px;
+  padding: 5px 9px;
   position: absolute;
-  top: 52px;
+  top: 48px;
+}
+
+.view-overlay {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  min-width: 176px;
+  padding: 8px 9px;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+}
+
+.view-overlay-copy {
+  align-items: baseline;
+  display: flex;
+  gap: 9px;
+  justify-content: space-between;
+}
+
+#view-mode {
+  color: var(--view-accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+#view-detail {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.diagnostic-ramp {
+  background: var(--ramp);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  height: 5px;
+}
+
+.interaction-feedback {
+  color: var(--soft);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px;
+  max-width: min(460px, calc(100% - 24px));
+  padding: 6px;
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+}
+
+.input-chip {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 5px;
+  color: var(--soft);
+  line-height: 1;
+  padding: 5px 7px;
+}
+
+.input-chip.accent {
+  border-color: color-mix(in srgb, var(--view-accent) 52%, transparent);
+  color: var(--view-accent);
 }
 
 .hidden {
@@ -274,9 +348,14 @@ h1 {
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-height: 0;
   padding: 12px;
+}
+
+.control-group {
+  display: grid;
+  gap: 8px;
 }
 
 .panel-title {
@@ -294,6 +373,7 @@ h1 {
   gap: 7px;
 }
 
+.view-primary button,
 .layer-grid button {
   display: grid;
   gap: 8px;
@@ -302,6 +382,26 @@ h1 {
   min-height: 38px;
   padding: 0 10px;
   text-align: left;
+  width: 100%;
+}
+
+.view-primary button {
+  min-height: 42px;
+}
+
+.diagnostic-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.diagnostic-controls button {
+  gap: 6px;
+  grid-template-columns: 10px minmax(0, 1fr);
+  min-height: 42px;
+  padding: 0 8px;
+}
+
+.diagnostic-controls .key {
+  display: none;
 }
 
 .swatch {
@@ -340,6 +440,7 @@ h1 {
   background: var(--rose);
 }
 
+.view-primary button.active .key,
 .layer-grid button.active .key {
   color: var(--view-accent);
 }
@@ -387,5 +488,19 @@ h1 {
 
   .layer-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .diagnostic-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .view-overlay {
+    left: 12px;
+    right: auto;
+    top: 46px;
+  }
+
+  .busy {
+    top: 92px;
   }
 }

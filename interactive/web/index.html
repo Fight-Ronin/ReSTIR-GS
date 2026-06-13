@@ -26,19 +26,39 @@
             <div id="view-badge" class="view-badge">RGB</div>
             <div id="frame-badge" class="frame-badge">Frame 1</div>
           </div>
+          <div id="view-overlay" class="view-overlay hidden">
+            <div class="view-overlay-copy">
+              <span id="view-mode">RGB</span>
+              <span id="view-detail">composite</span>
+            </div>
+            <div id="diagnostic-ramp" class="diagnostic-ramp"></div>
+          </div>
+          <div id="interaction-feedback" class="interaction-feedback hidden"></div>
           <div id="viewport-readout" class="viewport-readout">ready</div>
           <div id="busy" class="busy hidden">rendering</div>
         </div>
 
         <aside class="sidebar">
-          <div class="panel-title">Layers</div>
-          <div class="layer-grid" id="layer-grid">
-            <button type="button" data-view="rgb"><span class="swatch"></span><span class="key">1</span><span>RGB</span></button>
-            <button type="button" data-view="alpha"><span class="swatch"></span><span class="key">2</span><span>Alpha</span></button>
-            <button type="button" data-view="depth"><span class="swatch"></span><span class="key">3</span><span>Depth</span></button>
-            <button type="button" data-view="normal"><span class="swatch"></span><span class="key">4</span><span>Normal</span></button>
-            <button type="button" data-view="lambertian"><span class="swatch"></span><span class="key">5</span><span>Lambertian</span></button>
-            <button type="button" data-view="blinn_phong"><span class="swatch"></span><span class="key">6</span><span>Blinn-Phong</span></button>
+          <div class="control-group">
+            <div class="panel-title">View</div>
+            <div class="view-primary">
+              <button type="button" data-view="rgb"><span class="swatch"></span><span class="key">1</span><span>RGB</span></button>
+            </div>
+          </div>
+          <div class="control-group">
+            <div class="panel-title">Diagnostics</div>
+            <div class="layer-grid diagnostic-controls" id="diagnostic-controls">
+              <button type="button" data-view="alpha"><span class="swatch"></span><span class="key">2</span><span>Alpha</span></button>
+              <button type="button" data-view="depth"><span class="swatch"></span><span class="key">3</span><span>Depth</span></button>
+              <button type="button" data-view="normal"><span class="swatch"></span><span class="key">4</span><span>Normal</span></button>
+            </div>
+          </div>
+          <div class="control-group lighting-controls">
+            <div class="panel-title">Lighting</div>
+            <div class="layer-grid lighting-grid">
+              <button type="button" data-view="lambertian"><span class="swatch"></span><span class="key">5</span><span>Lambertian</span></button>
+              <button type="button" data-view="blinn_phong"><span class="swatch"></span><span class="key">6</span><span>Blinn-Phong</span></button>
+            </div>
           </div>
           <div class="panel-title">Status</div>
           <div class="status" id="status">ready</div>

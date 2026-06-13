@@ -4,6 +4,8 @@ Standalone helper for producing local room Gaussian Splatting assets before they
 
 This directory intentionally does not modify `configs/aligned_assets.json` or the active renderer path. It only plans, probes, validates, and stages generated assets.
 
+For the first completed public-video smoke path, see `docs/phase49_video_colmap_gs_generation.md`.
+
 ## Local Tools And Assets
 
 Capture videos and third-party reconstruction tools are local-only and ignored by Git. After cloning, place optional source videos wherever convenient, for example:

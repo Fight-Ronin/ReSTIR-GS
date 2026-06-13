@@ -385,6 +385,14 @@ def _evaluate_restir_frame_core(
         device=gbuffer.rgb.device,
     )
     timer.mark("after_proposal")
+    visibility_candidate_contributions = None
+    if settings.target_mode == "visibility":
+        visibility_candidate_contributions = evaluate_selected_light_visible_diffuse_cached(
+            gbuffer,
+            lights,
+            _require_visibility_cache(visibility_cache),
+            samples.light_indices,
+        )
     geometric_mc = None
     if settings.include_mc_baseline:
         if settings.target_mode == "visibility":
@@ -394,6 +402,7 @@ def _evaluate_restir_frame_core(
                 _require_visibility_cache(visibility_cache),
                 samples,
                 ambient=settings.ambient,
+                contribution_candidates=visibility_candidate_contributions,
             )
         else:
             geometric_mc = estimate_proposal_lighting(
@@ -412,6 +421,7 @@ def _evaluate_restir_frame_core(
             selection_seed=settings.initial_selection_seed_base + frame_index,
             ambient=settings.ambient,
             proposal_probs=samples.proposal_probs,
+            contribution_candidates=visibility_candidate_contributions,
         )
     else:
         initial, initial_reservoir = estimate_ris_initial_lighting(

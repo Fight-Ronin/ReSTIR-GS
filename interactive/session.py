@@ -13,7 +13,7 @@ from restir_gs.render.orbit_camera import (
     orbit_state_pan,
 )
 
-from interactive.camera import camera_move_step, camera_state_translate_local
+from interactive.camera import camera_move_step, camera_state_look, camera_state_translate_local
 from interactive.layers import VIEWER_VIEW_LABELS
 
 
@@ -86,6 +86,14 @@ class InteractiveSession:
             delta_pitch_degrees=delta_pitch_degrees,
         )
         return self.render()
+
+    def look(self, delta_yaw_degrees: float, delta_pitch_degrees: float) -> Any:
+        self.state = camera_state_look(
+            self.state,
+            delta_yaw_degrees=delta_yaw_degrees,
+            delta_pitch_degrees=delta_pitch_degrees,
+        )
+        return self.render(status_message="free look")
 
     def pan(self, delta_right: float, delta_up: float) -> Any:
         self.state = orbit_state_pan(

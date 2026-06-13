@@ -111,6 +111,89 @@ def test_low_shadow_alpha_means_no_blocker() -> None:
     assert torch.allclose(visibility, torch.ones((1, 1, 1)))
 
 
+def test_partial_shadow_alpha_returns_partial_visibility() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_shadow_bundle(depth=1.0, alpha=0.25, depth_bias=0.0)
+
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        torch.zeros((1, 1, 1), dtype=torch.long),
+        alpha_threshold=0.0,
+    )
+
+    assert torch.allclose(visibility, torch.full((1, 1, 1), 0.75))
+
+
+def test_partial_shadow_alpha_respects_alpha_threshold() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_shadow_bundle(depth=1.0, alpha=0.6, depth_bias=0.0)
+
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        torch.zeros((1, 1, 1), dtype=torch.long),
+        alpha_threshold=0.2,
+    )
+
+    assert torch.allclose(visibility, torch.full((1, 1, 1), 0.5))
+
+
+def test_pcf_radius_one_averages_partial_shadow_alpha_samples() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_shadow_bundle(depth=1.0, alpha=0.0, depth_bias=0.0)
+    shadow.alpha_maps[0, 1, 1] = 0.5
+
+    visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        torch.zeros((1, 1, 1), dtype=torch.long),
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(visibility, torch.full((1, 1, 1), 8.5 / 9.0))
+
+
+def test_non_dense_shadow_indices_match_dense_visibility_path() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    dense_shadow = make_shadow_bundle(depth=1.0, alpha=0.25, depth_bias=0.0)
+    sparse_shadow = ShadowMapBundle(
+        light_indices=torch.tensor([7], dtype=torch.long),
+        light_cameras=dense_shadow.light_cameras,
+        depth_maps=dense_shadow.depth_maps,
+        alpha_maps=dense_shadow.alpha_maps,
+        scene_radius=dense_shadow.scene_radius,
+        depth_bias=dense_shadow.depth_bias,
+    )
+
+    dense_visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        dense_shadow,
+        torch.zeros((1, 1, 1), dtype=torch.long),
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+    sparse_visibility = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        sparse_shadow,
+        torch.full((1, 1, 1), 7, dtype=torch.long),
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(sparse_visibility, dense_visibility)
+
+
 def test_out_of_bounds_or_negative_light_z_is_invisible() -> None:
     camera = make_identity_camera()
     shadow = make_shadow_bundle(depth=10.0, alpha=0.0, depth_bias=0.0)

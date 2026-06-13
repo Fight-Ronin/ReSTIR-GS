@@ -75,6 +75,10 @@ class WebViewerState:
                 dx = float(payload.get("dx", 0.0))
                 dy = float(payload.get("dy", 0.0))
                 self.session.orbit(delta_yaw_degrees=dx * 0.25, delta_pitch_degrees=-dy * 0.25)
+            elif action == "look":
+                dx = float(payload.get("dx", 0.0))
+                dy = float(payload.get("dy", 0.0))
+                self.session.look(delta_yaw_degrees=dx * 0.25, delta_pitch_degrees=-dy * 0.25)
             elif action == "pan":
                 dx = float(payload.get("dx", 0.0))
                 dy = float(payload.get("dy", 0.0))

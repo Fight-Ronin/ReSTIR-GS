@@ -7,6 +7,10 @@ const assetTitle = document.getElementById("asset-title");
 const viewBadge = document.getElementById("view-badge");
 const frameBadge = document.getElementById("frame-badge");
 const viewportReadout = document.getElementById("viewport-readout");
+const viewOverlay = document.getElementById("view-overlay");
+const viewMode = document.getElementById("view-mode");
+const viewDetail = document.getElementById("view-detail");
+const interactionFeedback = document.getElementById("interaction-feedback");
 const layerButtons = Array.from(document.querySelectorAll("[data-view]"));
 const resetButton = document.getElementById("reset-button");
 const saveButton = document.getElementById("save-button");
@@ -16,6 +20,12 @@ let busy = false;
 let drag = null;
 let pendingControlDown = false;
 let resizeTimer = null;
+let controlHoldTimer = null;
+let pendingDragAction = null;
+let pendingOneShotAction = null;
+let resizePending = false;
+let movementCursor = 0;
+const activeMovementKeys = new Set();
 
 const viewLabels = {
   rgb: "RGB",
@@ -25,12 +35,44 @@ const viewLabels = {
   lambertian: "Lambertian",
   blinn_phong: "Blinn-Phong",
 };
+const viewProfiles = {
+  rgb: { mode: "RGB", detail: "composite", overlay: false },
+  alpha: { mode: "Alpha", detail: "0..1 mask", overlay: true },
+  depth: { mode: "Depth", detail: "near -> far", overlay: true },
+  normal: { mode: "Normal", detail: "camera xyz", overlay: true },
+  lambertian: { mode: "Lambertian", detail: "diffuse RIS", overlay: false },
+  blinn_phong: { mode: "Blinn-Phong", detail: "shader", overlay: false },
+};
 const minRenderDimension = 64;
 const maxRenderDimension = 2048;
+const controlHoldDelayMs = 160;
+const movementMap = {
+  w: "forward",
+  s: "backward",
+  a: "left",
+  d: "right",
+  shift: "up",
+  control: "down",
+};
+const movementOrder = ["w", "s", "a", "d", "shift", "control"];
+const inputLabels = {
+  w: "W",
+  s: "S",
+  a: "A",
+  d: "D",
+  shift: "Shift",
+  control: "Ctrl",
+  orbit: "Orbit",
+  look: "Look",
+  pan: "Pan",
+  resize: "Resize",
+  render: "Render",
+};
 
 function setBusy(value) {
   busy = value;
   busyBadge.classList.toggle("hidden", !value);
+  setInteractionFeedback();
 }
 
 async function fetchJson(url, options = {}) {
@@ -62,6 +104,7 @@ function updateUi(data) {
   ]);
   viewBadge.textContent = viewLabel;
   frameBadge.textContent = `Frame ${frameNumber}`;
+  updateViewOverlay(data.view);
   viewportReadout.textContent = [
     `${Number(camera.width || 0)} x ${Number(camera.height || 0)}`,
     `${Number(render.render_ms || 0).toFixed(1)} ms`,
@@ -71,6 +114,48 @@ function updateUi(data) {
   layerButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.view === data.view);
   });
+  setInteractionFeedback();
+}
+
+function updateViewOverlay(view) {
+  const profile = viewProfiles[view] || { mode: viewLabels[view] || view, detail: "", overlay: true };
+  viewMode.textContent = profile.mode;
+  viewDetail.textContent = profile.detail;
+  viewOverlay.classList.toggle("hidden", !profile.overlay);
+}
+
+function setInteractionFeedback() {
+  const chips = [];
+  if (busy) {
+    chips.push({ label: inputLabels.render, accent: true });
+  }
+  if (drag) {
+    chips.push({ label: inputLabels[drag.mode] || drag.mode, accent: true });
+  }
+  activeMovementKeys.forEach((key) => {
+    chips.push({ label: inputLabels[key] || key.toUpperCase(), accent: true });
+  });
+  if (pendingControlDown) {
+    chips.push({ label: inputLabels.control, accent: false });
+  }
+  if (pendingDragAction !== null) {
+    chips.push({ label: `${inputLabels[pendingDragAction.action] || pendingDragAction.action} queued`, accent: false });
+  }
+  if (pendingOneShotAction !== null) {
+    chips.push({ label: "Action queued", accent: false });
+  }
+  if (resizePending) {
+    chips.push({ label: `${inputLabels.resize} queued`, accent: false });
+  }
+  interactionFeedback.classList.toggle("hidden", chips.length === 0);
+  interactionFeedback.replaceChildren(
+    ...chips.map((chip) => {
+      const element = document.createElement("span");
+      element.className = chip.accent ? "input-chip accent" : "input-chip";
+      element.textContent = chip.label;
+      return element;
+    }),
+  );
 }
 
 function setMetricChips(values) {
@@ -96,7 +181,7 @@ async function refreshSnapshot() {
 
 async function postJson(url, payload = null) {
   if (busy) {
-    return;
+    return false;
   }
   setBusy(true);
   try {
@@ -108,15 +193,18 @@ async function postJson(url, payload = null) {
     const data = await fetchJson(url, options);
     updateUi(data.snapshot || data);
     refreshImage();
+    return true;
   } catch (error) {
     statusBox.textContent = `error: ${error.message}`;
+    return false;
   } finally {
     setBusy(false);
+    drainRenderQueue();
   }
 }
 
 function action(payload) {
-  return postJson("/api/action", payload);
+  return enqueueOneShotAction(payload);
 }
 
 function setView(view) {
@@ -139,23 +227,139 @@ function viewportRenderSize() {
 
 function scheduleViewportResize() {
   window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(syncViewportSize, 180);
+  resizeTimer = window.setTimeout(() => {
+    resizePending = true;
+    setInteractionFeedback();
+    drainRenderQueue();
+  }, 180);
 }
 
-async function syncViewportSize() {
+function nextResizeRequest() {
+  if (!resizePending || drag !== null || pendingDragAction !== null || activeMovementKeys.size > 0 || pendingOneShotAction !== null) {
+    return null;
+  }
   const size = viewportRenderSize();
   if (size === null) {
-    return;
-  }
-  if (busy) {
-    scheduleViewportResize();
-    return;
+    resizePending = false;
+    setInteractionFeedback();
+    return null;
   }
   const camera = (snapshot && snapshot.camera) || {};
   if (Number(camera.width) === size.width && Number(camera.height) === size.height) {
+    resizePending = false;
+    setInteractionFeedback();
+    return null;
+  }
+  resizePending = false;
+  setInteractionFeedback();
+  return { url: "/api/resize", payload: size };
+}
+
+function enqueueDragAction(mode, dx, dy) {
+  if (pendingDragAction && pendingDragAction.action === mode) {
+    pendingDragAction.dx += dx;
+    pendingDragAction.dy += dy;
+  } else {
+    pendingDragAction = { action: mode, dx, dy };
+  }
+  setInteractionFeedback();
+  drainRenderQueue();
+}
+
+function enqueueOneShotAction(payload) {
+  if (busy || pendingDragAction !== null || activeMovementKeys.size > 0) {
+    pendingOneShotAction = payload;
+    setInteractionFeedback();
+    drainRenderQueue();
+    return Promise.resolve(false);
+  }
+  return postJson("/api/action", payload);
+}
+
+function nextMovementCommand() {
+  if (activeMovementKeys.size === 0) {
+    return null;
+  }
+  for (let offset = 0; offset < movementOrder.length; offset += 1) {
+    const index = (movementCursor + offset) % movementOrder.length;
+    const key = movementOrder[index];
+    if (activeMovementKeys.has(key)) {
+      movementCursor = (index + 1) % movementOrder.length;
+      return movementMap[key];
+    }
+  }
+  return null;
+}
+
+function nextQueuedRequest() {
+  if (pendingDragAction !== null) {
+    const payload = pendingDragAction;
+    pendingDragAction = null;
+    setInteractionFeedback();
+    return { url: "/api/action", payload };
+  }
+  if (pendingOneShotAction !== null) {
+    const payload = pendingOneShotAction;
+    pendingOneShotAction = null;
+    setInteractionFeedback();
+    return { url: "/api/action", payload };
+  }
+  const movementCommand = nextMovementCommand();
+  if (movementCommand !== null) {
+    return { url: "/api/action", payload: { action: "move", command: movementCommand } };
+  }
+  return nextResizeRequest();
+}
+
+function drainRenderQueue() {
+  if (busy) {
     return;
   }
-  await postJson("/api/resize", size);
+  const request = nextQueuedRequest();
+  if (request !== null) {
+    void postJson(request.url, request.payload);
+  }
+}
+
+function startMovementKey(key) {
+  if (key === "control") {
+    if (pendingControlDown || activeMovementKeys.has("control")) {
+      return;
+    }
+    pendingControlDown = true;
+    window.clearTimeout(controlHoldTimer);
+    controlHoldTimer = window.setTimeout(() => {
+      if (pendingControlDown) {
+        pendingControlDown = false;
+        activeMovementKeys.add("control");
+        setInteractionFeedback();
+        drainRenderQueue();
+      }
+    }, controlHoldDelayMs);
+    setInteractionFeedback();
+    return;
+  }
+  activeMovementKeys.add(key);
+  setInteractionFeedback();
+  drainRenderQueue();
+}
+
+function stopMovementKey(key) {
+  if (key === "control") {
+    window.clearTimeout(controlHoldTimer);
+    if (pendingControlDown) {
+      pendingControlDown = false;
+      enqueueOneShotAction({ action: "move", command: "down" });
+    } else {
+      activeMovementKeys.delete("control");
+      setInteractionFeedback();
+      drainRenderQueue();
+    }
+    return;
+  }
+  activeMovementKeys.delete(key);
+  setInteractionFeedback();
+  drainRenderQueue();
 }
 
 layerButtons.forEach((button) => {
@@ -169,11 +373,11 @@ document.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === "s") {
     pendingControlDown = false;
+    activeMovementKeys.delete("control");
+    window.clearTimeout(controlHoldTimer);
+    setInteractionFeedback();
     event.preventDefault();
     saveCurrent();
-    return;
-  }
-  if (event.repeat || busy) {
     return;
   }
   const numberMap = {
@@ -184,26 +388,17 @@ document.addEventListener("keydown", (event) => {
     "5": "lambertian",
     "6": "blinn_phong",
   };
+  if (movementMap[key]) {
+    event.preventDefault();
+    startMovementKey(key);
+    return;
+  }
+  if (event.repeat || busy) {
+    return;
+  }
   if (numberMap[key]) {
     event.preventDefault();
     setView(numberMap[key]);
-    return;
-  }
-  const movementMap = {
-    w: "forward",
-    s: "backward",
-    a: "left",
-    d: "right",
-    shift: "up",
-  };
-  if (movementMap[key]) {
-    event.preventDefault();
-    action({ action: "move", command: movementMap[key] });
-    return;
-  }
-  if (key === "control") {
-    pendingControlDown = true;
-    event.preventDefault();
     return;
   }
   if (key === "[") {
@@ -223,20 +418,19 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("keyup", (event) => {
-  if (event.key.toLowerCase() === "control" && pendingControlDown && !busy) {
-    pendingControlDown = false;
+  const key = event.key.toLowerCase();
+  if (movementMap[key]) {
     event.preventDefault();
-    action({ action: "move", command: "down" });
+    stopMovementKey(key);
   }
 });
 
 viewportWrap.addEventListener("pointerdown", (event) => {
-  if (busy) {
-    return;
-  }
   let mode = null;
   if (event.button === 1 || (event.button === 0 && event.shiftKey)) {
     mode = "pan";
+  } else if (event.button === 2) {
+    mode = "look";
   } else if (event.button === 0) {
     mode = "orbit";
   }
@@ -249,11 +443,16 @@ viewportWrap.addEventListener("pointerdown", (event) => {
     y: event.clientY,
     mode,
   };
+  setInteractionFeedback();
   viewportWrap.setPointerCapture(event.pointerId);
 });
 
+viewportWrap.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+});
+
 viewportWrap.addEventListener("pointermove", (event) => {
-  if (!drag || busy) {
+  if (!drag) {
     return;
   }
   const dx = event.clientX - drag.x;
@@ -263,24 +462,39 @@ viewportWrap.addEventListener("pointermove", (event) => {
   }
   drag.x = event.clientX;
   drag.y = event.clientY;
-  action({ action: drag.mode, dx, dy });
+  enqueueDragAction(drag.mode, dx, dy);
 });
 
 viewportWrap.addEventListener("pointerup", () => {
   drag = null;
+  setInteractionFeedback();
+  drainRenderQueue();
 });
 
 viewportWrap.addEventListener("pointerleave", () => {
   drag = null;
+  setInteractionFeedback();
+  drainRenderQueue();
+});
+
+viewportWrap.addEventListener("lostpointercapture", () => {
+  drag = null;
+  setInteractionFeedback();
+  drainRenderQueue();
+});
+
+window.addEventListener("blur", () => {
+  pendingControlDown = false;
+  activeMovementKeys.clear();
+  window.clearTimeout(controlHoldTimer);
+  drag = null;
+  setInteractionFeedback();
 });
 
 viewportWrap.addEventListener(
   "wheel",
   (event) => {
     event.preventDefault();
-    if (busy) {
-      return;
-    }
     action({ action: "dolly", scale: event.deltaY < 0 ? 0.9 : 1.1 });
   },
   { passive: false },
