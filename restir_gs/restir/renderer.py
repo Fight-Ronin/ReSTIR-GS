@@ -55,6 +55,8 @@ RESTIR_TIMING_FIELDS = (
     "gbuffer_gpu_ms",
     "world_lights_to_camera_gpu_ms",
     "reference_lighting_gpu_ms",
+    "proposal_distribution_gpu_ms",
+    "proposal_sampling_gpu_ms",
     "proposal_gpu_ms",
     "initial_ris_gpu_ms",
     "temporal_lookup_gpu_ms",
@@ -72,6 +74,8 @@ class RestirFrameTimings:
     gbuffer_gpu_ms: float = 0.0
     world_lights_to_camera_gpu_ms: float = 0.0
     reference_lighting_gpu_ms: float = 0.0
+    proposal_distribution_gpu_ms: float = 0.0
+    proposal_sampling_gpu_ms: float = 0.0
     proposal_gpu_ms: float = 0.0
     initial_ris_gpu_ms: float = 0.0
     temporal_lookup_gpu_ms: float = 0.0
@@ -88,6 +92,8 @@ class RestirFrameTimings:
             "gbuffer_gpu_ms": float(self.gbuffer_gpu_ms),
             "world_lights_to_camera_gpu_ms": float(self.world_lights_to_camera_gpu_ms),
             "reference_lighting_gpu_ms": float(self.reference_lighting_gpu_ms),
+            "proposal_distribution_gpu_ms": float(self.proposal_distribution_gpu_ms),
+            "proposal_sampling_gpu_ms": float(self.proposal_sampling_gpu_ms),
             "proposal_gpu_ms": float(self.proposal_gpu_ms),
             "initial_ris_gpu_ms": float(self.initial_ris_gpu_ms),
             "temporal_lookup_gpu_ms": float(self.temporal_lookup_gpu_ms),
@@ -213,6 +219,8 @@ class _FrameStageTimer:
             gbuffer_gpu_ms=self.elapsed("after_render_rgbd", "after_gbuffer"),
             world_lights_to_camera_gpu_ms=self.elapsed("after_gbuffer", "after_world_lights_to_camera"),
             reference_lighting_gpu_ms=self.elapsed("after_world_lights_to_camera", "after_reference_lighting"),
+            proposal_distribution_gpu_ms=self.elapsed("after_reference_lighting", "after_proposal_distribution"),
+            proposal_sampling_gpu_ms=self.elapsed("after_proposal_distribution", "after_proposal"),
             proposal_gpu_ms=self.elapsed("after_reference_lighting", "after_proposal"),
             initial_ris_gpu_ms=self.elapsed("after_proposal", "after_initial_ris"),
             temporal_lookup_gpu_ms=self.elapsed("after_initial_ris", "after_temporal_lookup"),
@@ -378,6 +386,7 @@ def _evaluate_restir_frame_core(
         raise RuntimeError(f"Frame {frame_index} has no valid lighting pixels.")
 
     proposal_distribution = _compute_proposal_distribution(gbuffer, camera, lights, shadow_bundle, settings, visibility_cache)
+    timer.mark("after_proposal_distribution")
     samples = sample_light_candidates_from_distribution(
         proposal_distribution,
         settings.candidate_count,

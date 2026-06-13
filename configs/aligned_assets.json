@@ -2,16 +2,27 @@
   "version": 1,
   "asset_sets": {
     "smoke": ["dxgl_apple"],
-    "testing": ["dxgl_apple", "dxgl_cash_register", "dxgl_drill", "dxgl_fire_extinguisher"]
+    "testing": [
+      "dxgl_apple",
+      "dxgl_cash_register",
+      "dxgl_drill",
+      "dxgl_fire_extinguisher",
+      "dxgl_led_lightbulb",
+      "dxgl_measuring_tape",
+      "dxgl_modern_arm_chair",
+      "dxgl_multi_cleaner_5l",
+      "dxgl_potted_plant",
+      "dxgl_wet_floor_sign"
+    ]
   },
   "assets": [
     {
       "asset_id": "dxgl_apple",
       "dataset_type": "dxgl",
       "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/vCHDLxjWG65d/dataset",
-      "dataset_root": "outputs/aligned_assets/dxgl/apple",
+      "dataset_root": "data/dxgl/apple",
       "splat_url": "https://dx.gl/splat/apple.ply",
-      "splat_path": "outputs/aligned_assets/dxgl/apple_splat/apple.ply",
+      "splat_path": "data/dxgl/apple_splat/apple.ply",
       "gaussian_schema": "auto",
       "max_gaussians": 0,
       "default_frames": [0, 49, 98, 147],
@@ -26,9 +37,9 @@
       "asset_id": "dxgl_cash_register",
       "dataset_type": "dxgl",
       "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/JfjLRexr6J7z/dataset",
-      "dataset_root": "outputs/aligned_assets/dxgl/cash_register",
+      "dataset_root": "data/dxgl/cash_register",
       "splat_url": "https://dx.gl/splat/cash_register.ply",
-      "splat_path": "outputs/aligned_assets/dxgl/cash_register_splat/cash_register.ply",
+      "splat_path": "data/dxgl/cash_register_splat/cash_register.ply",
       "gaussian_schema": "auto",
       "max_gaussians": 0,
       "default_frames": [0, 49, 98, 147],
@@ -43,9 +54,9 @@
       "asset_id": "dxgl_drill",
       "dataset_type": "dxgl",
       "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/A0dcsk7HHgAg/dataset",
-      "dataset_root": "outputs/aligned_assets/dxgl/drill",
+      "dataset_root": "data/dxgl/drill",
       "splat_url": "https://dx.gl/splat/drill.ply",
-      "splat_path": "outputs/aligned_assets/dxgl/drill_splat/drill.ply",
+      "splat_path": "data/dxgl/drill_splat/drill.ply",
       "gaussian_schema": "auto",
       "max_gaussians": 0,
       "default_frames": [0, 49, 98, 147],
@@ -60,9 +71,111 @@
       "asset_id": "dxgl_fire_extinguisher",
       "dataset_type": "dxgl",
       "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/cLgyqM5mhQoq/dataset",
-      "dataset_root": "outputs/aligned_assets/dxgl/fire_extinguisher",
+      "dataset_root": "data/dxgl/fire_extinguisher",
       "splat_url": "https://dx.gl/splat/fire_extinguisher.ply",
-      "splat_path": "outputs/aligned_assets/dxgl/fire_extinguisher_splat/fire_extinguisher.ply",
+      "splat_path": "data/dxgl/fire_extinguisher_splat/fire_extinguisher.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    },
+    {
+      "asset_id": "dxgl_led_lightbulb",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/ZuYmv3K9xN7u/dataset",
+      "dataset_root": "data/dxgl/led_lightbulb",
+      "splat_url": "https://dx.gl/splat/led_lightbulb.ply",
+      "splat_path": "data/dxgl/led_lightbulb_splat/led_lightbulb.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    },
+    {
+      "asset_id": "dxgl_measuring_tape",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/qqvDYx7RtHZd/dataset",
+      "dataset_root": "data/dxgl/measuring_tape",
+      "splat_url": "https://dx.gl/splat/measuring_tape.ply",
+      "splat_path": "data/dxgl/measuring_tape_splat/measuring_tape.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    },
+    {
+      "asset_id": "dxgl_modern_arm_chair",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/KLBJAuie9JaB/dataset",
+      "dataset_root": "data/dxgl/modern_arm_chair",
+      "splat_url": "https://dx.gl/splat/modern_arm_chair.ply",
+      "splat_path": "data/dxgl/modern_arm_chair_splat/modern_arm_chair.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    },
+    {
+      "asset_id": "dxgl_multi_cleaner_5l",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/79gDW15Gw9Ft/dataset",
+      "dataset_root": "data/dxgl/multi_cleaner_5l",
+      "splat_url": "https://dx.gl/splat/multi_cleaner_5l.ply",
+      "splat_path": "data/dxgl/multi_cleaner_5l_splat/multi_cleaner_5l.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    },
+    {
+      "asset_id": "dxgl_potted_plant",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/o4c5zRyGuT7W/dataset",
+      "dataset_root": "data/dxgl/potted_plant",
+      "splat_url": "https://dx.gl/splat/potted_plant.ply",
+      "splat_path": "data/dxgl/potted_plant_splat/potted_plant.ply",
+      "gaussian_schema": "auto",
+      "max_gaussians": 0,
+      "default_frames": [0, 49, 98, 147],
+      "temporal_window": [45, 46, 47, 48, 49, 50, 51, 52, 53],
+      "normalization": {
+        "camera_normalization": "inferred_from_points3d",
+        "normalization_rotation": "raw_y_to_z_up",
+        "bbox_percentile": 0.98
+      }
+    },
+    {
+      "asset_id": "dxgl_wet_floor_sign",
+      "dataset_type": "dxgl",
+      "dataset_url": "https://dx.gl/api/v/EJbs8npt2RVM/tHdRul1GzzoU/dataset",
+      "dataset_root": "data/dxgl/wet_floor_sign",
+      "splat_url": "https://dx.gl/splat/wet_floor_sign.ply",
+      "splat_path": "data/dxgl/wet_floor_sign_splat/wet_floor_sign.ply",
       "gaussian_schema": "auto",
       "max_gaussians": 0,
       "default_frames": [0, 49, 98, 147],

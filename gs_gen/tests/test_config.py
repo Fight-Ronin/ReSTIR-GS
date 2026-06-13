@@ -15,7 +15,7 @@ def test_config_loads_images_source(tmp_path) -> None:
             {
                 "asset_id": "my_room",
                 "workspace": "outputs/custom",
-                "source": {"kind": "images", "path": "data/images"},
+                "source": {"kind": "images", "path": "data/gs_gen/images"},
             }
         ),
         encoding="utf-8",

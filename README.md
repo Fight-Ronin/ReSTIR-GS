@@ -64,10 +64,12 @@ The active manifest is `configs/aligned_assets.json`.
 
 ```text
 asset_sets.smoke   = dxgl_apple
-asset_sets.testing = dxgl_apple, dxgl_cash_register, dxgl_drill, dxgl_fire_extinguisher
+asset_sets.testing = dxgl_apple, dxgl_cash_register, dxgl_drill, dxgl_fire_extinguisher,
+                     dxgl_led_lightbulb, dxgl_measuring_tape, dxgl_modern_arm_chair,
+                     dxgl_multi_cleaner_5l, dxgl_potted_plant, dxgl_wet_floor_sign
 ```
 
-Downloaded assets and generated outputs stay under ignored `outputs/`.
+Downloaded/source assets stay under ignored `data/`; generated outputs stay under ignored `outputs/`.
 
 ## Outputs
 
@@ -149,6 +151,7 @@ python -m interactive.web_server --ply path\to\asset.ply --device cuda
 
 ```text
 configs/       aligned asset manifest
+data/          ignored local data root, with tracked layout notes
 restir_gs/     renderer, lighting, ReSTIR, metrics, and eval helpers
 interactive/   matplotlib and browser viewer frontends
 gs_gen/        standalone local Gaussian asset generation helper
@@ -185,8 +188,8 @@ interactive/web_server.py
 Example:
 
 ```powershell
-python -m gs_gen probe-source --images data\room_capture\my_room\images
-python -m gs_gen plan --asset-id my_room --images data\room_capture\my_room\images
+python -m gs_gen probe-source --images data\gs_gen\room_capture\my_room\images
+python -m gs_gen plan --asset-id my_room --images data\gs_gen\room_capture\my_room\images
 python -m gs_gen validate --dataset-root outputs\gsgen\my_room\processed --splat outputs\gsgen\my_room\export\splat.ply
 python -m gs_gen stage --asset-id my_room --dataset-root outputs\gsgen\my_room\processed --splat outputs\gsgen\my_room\export\splat.ply --copy-images
 ```

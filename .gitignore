@@ -5,6 +5,10 @@ __pycache__/
 
 outputs/
 
+# Local source/downloaded datasets live here; keep only the directory guide tracked.
+data/*
+!data/README.md
+
 # Local media and third-party tool bundles are documented but not committed.
 gs_gen/asset/*.mp4
 gs_gen/tools/colmap-4.0.4-nocuda/

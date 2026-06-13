@@ -29,7 +29,7 @@ JSON config with asset_id, source, and optional workspace
 Capture videos, image sequences, generated datasets, trained models, and exported splats should stay in ignored local directories such as:
 
 ```text
-gs_gen/asset/
+data/gs_gen/
 outputs/gsgen/
 ```
 
@@ -44,8 +44,8 @@ The committed files under `gs_gen/tools/` are wrappers/helpers only; the extract
 ## Probe Sources
 
 ```powershell
-python -m gs_gen probe-source --images data\room_capture\my_room\images
-python -m gs_gen probe-source --video data\room_capture\my_room\walkthrough.mp4
+python -m gs_gen probe-source --images data\gs_gen\room_capture\my_room\images
+python -m gs_gen probe-source --video data\gs_gen\room_capture\my_room\walkthrough.mp4
 ```
 
 Add `--json` for machine-readable output.
@@ -53,7 +53,7 @@ Add `--json` for machine-readable output.
 ## Extract Video Frames
 
 ```powershell
-python -m gs_gen extract-frames --video data\room_capture\my_room\walkthrough.mp4 --output-dir outputs\gsgen\my_room\source_images --target-fps 5
+python -m gs_gen extract-frames --video data\gs_gen\room_capture\my_room\walkthrough.mp4 --output-dir outputs\gsgen\my_room\source_images --target-fps 5
 ```
 
 Useful options:
@@ -69,13 +69,13 @@ Useful options:
 From an image directory:
 
 ```powershell
-python -m gs_gen plan --asset-id my_room --images data\room_capture\my_room\images
+python -m gs_gen plan --asset-id my_room --images data\gs_gen\room_capture\my_room\images
 ```
 
 From a video:
 
 ```powershell
-python -m gs_gen plan --asset-id my_room --video data\room_capture\my_room\walkthrough.mp4
+python -m gs_gen plan --asset-id my_room --video data\gs_gen\room_capture\my_room\walkthrough.mp4
 ```
 
 From a config file:

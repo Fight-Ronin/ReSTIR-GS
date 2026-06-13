@@ -11,7 +11,7 @@ python scripts/download_aligned_asset.py --asset-set testing
 python scripts/download_aligned_splat.py --asset-set testing
 ```
 
-The manifest is `configs/aligned_assets.json`. `asset_sets.testing` currently contains four DXGL assets.
+The manifest is `configs/aligned_assets.json`. `asset_sets.testing` contains the 10 DXGL Polyhaven assets and resolves local data under `data/dxgl/`.
 
 ## 2. Run Active Baseline Demo
 

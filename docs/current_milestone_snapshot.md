@@ -67,4 +67,4 @@ The interactive viewer uses display-oriented output by default. `--save-visibili
 
 ## Next Sensible Work
 
-The codebase is clean enough to treat the current active path as the handoff baseline. Future work should be a deliberate larger change, such as GPU performance engineering for visibility proposal/RIS evaluation, better visibility semantics, broader aligned assets, or a production-quality viewer path. More small parameter tuning on the current four assets is not recommended.
+The codebase is clean enough to treat the current active path as the handoff baseline. Future work should be a deliberate larger change, such as GPU performance engineering for visibility proposal/RIS evaluation, better visibility semantics, broader aligned assets, or a production-quality viewer path. More small parameter tuning on the current 10 assets is not recommended.

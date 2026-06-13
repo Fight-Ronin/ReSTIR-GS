@@ -155,4 +155,4 @@ The next meaningful work should be a larger step, not more small parameter tunin
 5. Production-quality interactive renderer path.
 ```
 
-Do not spend more time tuning temporal alpha, spatial reuse, or small ablations on the current four-asset testing set unless a larger research question changes the objective.
+Do not spend more time tuning temporal alpha, spatial reuse, or small ablations on the current 10-asset testing set unless a larger research question changes the objective.

@@ -3,6 +3,6 @@
   "workspace": "outputs/gsgen",
   "source": {
     "kind": "images",
-    "path": "data/room_capture/my_room/images"
+    "path": "data/gs_gen/room_capture/my_room/images"
   }
 }

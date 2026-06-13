@@ -23,6 +23,22 @@ def compute_geometric_proposal_distribution(
     distance_epsilon: float = 1e-4,
 ) -> torch.Tensor:
     """Compute per-pixel geometric proposal probabilities over all lights."""
+    weights = _compute_geometric_proposal_weights(
+        gbuffer,
+        lights,
+        two_sided=two_sided,
+        distance_epsilon=distance_epsilon,
+    )
+    return _normalize_geometric_weights(weights)
+
+
+def _compute_geometric_proposal_weights(
+    gbuffer: GBuffer,
+    lights: PointLights,
+    two_sided: bool = True,
+    distance_epsilon: float = 1e-4,
+) -> torch.Tensor:
+    """Compute unnormalized per-pixel geometric proposal weights."""
     if distance_epsilon < 0.0:
         raise ValueError(f"Expected non-negative distance_epsilon, got {distance_epsilon}")
     if lights.positions_cam.ndim != 2 or lights.positions_cam.shape[-1] != 3:
@@ -55,11 +71,14 @@ def compute_geometric_proposal_distribution(
     weights = light_power[None, None, :] * cos_theta / dist2
     valid = (gbuffer.valid_mask & gbuffer.normal_mask)[..., None]
     weights = torch.where(valid, weights.clamp_min(0.0), torch.zeros_like(weights))
+    return weights
 
+
+def _normalize_geometric_weights(weights: torch.Tensor) -> torch.Tensor:
     weight_sum = weights.sum(dim=-1, keepdim=True)
-    light_count = lights.positions_cam.shape[0]
+    light_count = weights.shape[-1]
     uniform = torch.full_like(weights, 1.0 / float(light_count))
-    normalized = weights / weight_sum.clamp_min(torch.finfo(dtype).tiny)
+    normalized = weights / weight_sum.clamp_min(torch.finfo(weights.dtype).tiny)
     use_uniform = weight_sum <= 0.0
     return torch.where(use_uniform, uniform, normalized)
 
@@ -108,10 +127,7 @@ def compute_visibility_geometric_proposal_distribution(
         alpha_threshold=alpha_threshold,
         pcf_radius=pcf_radius,
     ).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
-    weights = base * visibility
-    weight_sum = weights.sum(dim=-1, keepdim=True)
-    normalized = weights / weight_sum.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)
-    return torch.where(weight_sum > 0.0, normalized, base)
+    return _normalize_visible_distribution(base, visibility)
 
 
 def compute_visibility_geometric_proposal_distribution_cached(
@@ -136,14 +152,29 @@ def compute_visibility_geometric_proposal_distribution_cached(
         two_sided=two_sided,
         distance_epsilon=distance_epsilon,
     )
+    visibility = _dense_visibility_or_gathered(gbuffer, visibility_cache, light_count)
+    return _normalize_visible_distribution(base, visibility)
+
+
+def _dense_visibility_or_gathered(
+    gbuffer: GBuffer,
+    visibility_cache: ShadowVisibilityCache,
+    light_count: int,
+) -> torch.Tensor:
+    expected_shape = (*gbuffer.depth.shape, light_count)
+    if visibility_cache.visibility.shape == expected_shape:
+        return visibility_cache.visibility.to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
     height, width = gbuffer.depth.shape
     all_indices = torch.arange(light_count, dtype=torch.long, device=gbuffer.rgb.device)
     all_indices = all_indices.expand(height, width, light_count)
-    visibility = gather_shadow_visibility(visibility_cache, all_indices).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
-    weights = base * visibility
-    weight_sum = weights.sum(dim=-1, keepdim=True)
-    normalized = weights / weight_sum.clamp_min(torch.finfo(gbuffer.rgb.dtype).tiny)
-    return torch.where(weight_sum > 0.0, normalized, base)
+    return gather_shadow_visibility(visibility_cache, all_indices).to(device=gbuffer.rgb.device, dtype=gbuffer.rgb.dtype)
+
+
+def _normalize_visible_distribution(base_distribution: torch.Tensor, visibility: torch.Tensor) -> torch.Tensor:
+    visible_weights = base_distribution * visibility
+    visible_sum = visible_weights.sum(dim=-1, keepdim=True)
+    visible_normalized = visible_weights / visible_sum.clamp_min(torch.finfo(base_distribution.dtype).tiny)
+    return torch.where(visible_sum > 0.0, visible_normalized, base_distribution)
 
 
 def sample_light_candidates_from_distribution(
@@ -159,9 +190,18 @@ def sample_light_candidates_from_distribution(
         raise ValueError(f"Expected positive candidate count, got {candidate_count}")
     if not bool(torch.isfinite(proposal_probs).all()):
         raise ValueError("Proposal probabilities must be finite.")
+    if not bool((proposal_probs >= 0.0).all()):
+        raise ValueError("Proposal probabilities must be non-negative.")
 
     height, width, light_count = proposal_probs.shape
-    flat_probs = proposal_probs.detach().cpu().reshape(-1, light_count)
+    if light_count <= 0:
+        raise ValueError("Proposal probabilities must include at least one light.")
+    target_device = torch.device(device)
+    probs = proposal_probs.to(device=target_device)
+    if target_device.type == "cuda":
+        return _sample_light_candidates_from_distribution_cuda(probs, candidate_count, seed)
+
+    flat_probs = probs.detach().cpu().reshape(-1, light_count)
     row_sums = flat_probs.sum(dim=-1)
     if not bool(torch.all(row_sums > 0.0)):
         raise ValueError("Each proposal distribution row must have positive probability mass.")
@@ -170,10 +210,34 @@ def sample_light_candidates_from_distribution(
     generator.manual_seed(seed)
     flat_indices = torch.multinomial(flat_probs, candidate_count, replacement=True, generator=generator)
 
-    target_device = torch.device(device)
     light_indices = flat_indices.reshape(height, width, candidate_count).to(target_device)
-    probs = proposal_probs.to(device=target_device)
     proposal_selected = torch.gather(probs, dim=-1, index=light_indices)
+    return CandidateSamples(light_indices=light_indices, proposal_probs=proposal_selected)
+
+
+def _sample_light_candidates_from_distribution_cuda(
+    proposal_probs: torch.Tensor,
+    candidate_count: int,
+    seed: int,
+) -> CandidateSamples:
+    height, width, light_count = proposal_probs.shape
+    row_sums = proposal_probs.sum(dim=-1)
+    if not bool(torch.all(row_sums > 0.0).detach().cpu()):
+        raise ValueError("Each proposal distribution row must have positive probability mass.")
+
+    flat_cdf = proposal_probs.cumsum(dim=-1).reshape(-1, light_count).contiguous()
+    generator = torch.Generator(device=proposal_probs.device)
+    generator.manual_seed(seed)
+    thresholds = torch.rand(
+        (height * width, candidate_count),
+        generator=generator,
+        dtype=proposal_probs.dtype,
+        device=proposal_probs.device,
+    )
+    thresholds = thresholds * flat_cdf[:, -1:].clamp_min(torch.finfo(proposal_probs.dtype).tiny)
+    flat_indices = torch.searchsorted(flat_cdf, thresholds.contiguous(), right=False).clamp_max(light_count - 1)
+    light_indices = flat_indices.reshape(height, width, candidate_count)
+    proposal_selected = torch.gather(proposal_probs, dim=-1, index=light_indices)
     return CandidateSamples(light_indices=light_indices, proposal_probs=proposal_selected)
 
 

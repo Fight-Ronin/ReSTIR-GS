@@ -9,7 +9,7 @@ from gs_gen.source_probe import SourceInput
 def test_plan_uses_images_subcommand() -> None:
     plan = build_nerfstudio_plan(
         "my_room",
-        SourceInput(kind="images", path=Path("data/my room/images")),
+        SourceInput(kind="images", path=Path("data/gs_gen/my room/images")),
         workspace=Path("outputs/gsgen"),
     )
 
@@ -24,7 +24,7 @@ def test_plan_uses_images_subcommand() -> None:
 def test_plan_uses_video_subcommand() -> None:
     plan = build_nerfstudio_plan(
         "my_room",
-        SourceInput(kind="video", path=Path("data/my_room/walkthrough.mp4")),
+        SourceInput(kind="video", path=Path("data/gs_gen/my_room/walkthrough.mp4")),
         workspace=Path("outputs/gsgen"),
     )
 

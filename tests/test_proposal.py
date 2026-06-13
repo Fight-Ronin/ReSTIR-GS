@@ -86,6 +86,40 @@ def test_candidate_sampling_is_deterministic_and_gathers_probs() -> None:
     assert torch.allclose(a.proposal_probs, gathered)
 
 
+def test_candidate_sampling_rejects_negative_probabilities() -> None:
+    proposal = torch.tensor([[[0.5, -0.1, 0.6]]], dtype=torch.float32)
+
+    try:
+        sample_light_candidates_from_distribution(proposal, candidate_count=1, seed=123, device="cpu")
+    except ValueError as exc:
+        assert "non-negative" in str(exc)
+    else:
+        raise AssertionError("Expected negative proposal probabilities to fail.")
+    if torch.cuda.is_available():
+        try:
+            sample_light_candidates_from_distribution(proposal.to("cuda"), candidate_count=1, seed=123, device="cuda")
+        except ValueError as exc:
+            assert "non-negative" in str(exc)
+        else:
+            raise AssertionError("Expected negative CUDA proposal probabilities to fail.")
+
+
+def test_cuda_candidate_sampling_is_deterministic_and_gathers_probs() -> None:
+    if not torch.cuda.is_available():
+        return
+    proposal = torch.tensor([[[0.1, 0.2, 0.7], [0.3, 0.3, 0.4]]], dtype=torch.float32, device="cuda")
+
+    a = sample_light_candidates_from_distribution(proposal, candidate_count=5, seed=123, device="cuda")
+    b = sample_light_candidates_from_distribution(proposal, candidate_count=5, seed=123, device="cuda")
+    gathered = torch.gather(proposal, dim=-1, index=a.light_indices)
+
+    assert a.light_indices.device.type == "cuda"
+    assert a.proposal_probs.device.type == "cuda"
+    assert torch.equal(a.light_indices, b.light_indices)
+    assert torch.allclose(a.proposal_probs, b.proposal_probs)
+    assert torch.allclose(a.proposal_probs, gathered)
+
+
 def test_proposal_mc_estimator_matches_closed_form() -> None:
     rgb = torch.ones((1, 1, 3), dtype=torch.float32)
     position = torch.zeros((1, 1, 3), dtype=torch.float32)
@@ -148,4 +182,3 @@ def test_uniform_estimator_matches_uniform_proposal_mc() -> None:
 
     assert torch.allclose(uniform.diffuse_rgb, proposal_mc.diffuse_rgb)
     assert torch.allclose(uniform.composite_rgb, proposal_mc.composite_rgb)
-

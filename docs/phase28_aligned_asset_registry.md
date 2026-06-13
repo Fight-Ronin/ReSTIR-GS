@@ -22,8 +22,8 @@ It now separates asset facts from run selection. Asset entries record dataset an
 ```text
 asset_id = dxgl_apple
 dataset_type = dxgl
-dataset_root = outputs/aligned_assets/dxgl/apple
-splat_path = outputs/aligned_assets/dxgl/apple_splat/apple.ply
+dataset_root = data/dxgl/apple
+splat_path = data/dxgl/apple_splat/apple.ply
 ```
 
 Adding a new aligned object should start by adding another manifest entry with explicit dataset and splat URLs, then optionally adding it to an asset set. The code should not grow another object-specific downloader script.

@@ -28,7 +28,18 @@ def test_default_manifest_contains_dxgl_apple() -> None:
     asset_ids = [asset.asset_id for asset in manifest.assets]
 
     assert manifest.version == 1
-    assert asset_ids == ["dxgl_apple", "dxgl_cash_register", "dxgl_drill", "dxgl_fire_extinguisher"]
+    assert asset_ids == [
+        "dxgl_apple",
+        "dxgl_cash_register",
+        "dxgl_drill",
+        "dxgl_fire_extinguisher",
+        "dxgl_led_lightbulb",
+        "dxgl_measuring_tape",
+        "dxgl_modern_arm_chair",
+        "dxgl_multi_cleaner_5l",
+        "dxgl_potted_plant",
+        "dxgl_wet_floor_sign",
+    ]
     assert get_aligned_asset_set(manifest, "smoke") == ["dxgl_apple"]
     assert get_aligned_asset_set(manifest, "testing") == asset_ids
     for asset_id in asset_ids:

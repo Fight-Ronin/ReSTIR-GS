@@ -15,7 +15,7 @@ The default sets are:
 
 ```text
 smoke   = dxgl_apple
-testing = dxgl_apple, dxgl_cash_register, dxgl_drill, dxgl_fire_extinguisher
+testing = all 10 DXGL Polyhaven assets
 ```
 
 This keeps future expansion clean: adding an object starts with a manifest entry, then optionally adding it to a set. The Gaussian splat still loads through `load_gaussian_asset(...)`; no object-specific loader is introduced.
@@ -31,6 +31,12 @@ dxgl_apple              organic baseline
 dxgl_cash_register      boxy electronics / hard edges
 dxgl_drill              elongated tool / local geometry complexity
 dxgl_fire_extinguisher  metallic cylinder / stronger highlight pressure
+dxgl_led_lightbulb      glass / transmissive-looking material pressure
+dxgl_measuring_tape     small tool with fine markings
+dxgl_modern_arm_chair   larger furniture silhouette
+dxgl_multi_cleaner_5l   product container with labels
+dxgl_potted_plant       organic structure and thin leaves
+dxgl_wet_floor_sign     bright plastic planar object
 ```
 
 Each asset uses:
@@ -82,10 +88,10 @@ outputs/aligned_smoke/aligned_asset_smoke_summary.json
 outputs/aligned_smoke/<asset_id>/contact.png
 ```
 
-When all four testing assets are present, the expected row count is:
+When all 10 testing assets are present, the expected row count is:
 
 ```text
-4 assets * 19 rows per asset = 76 rows
+10 assets * 19 rows per asset = 190 rows
 ```
 
 `all_numeric_finite=true` is required for the testing set to pass.

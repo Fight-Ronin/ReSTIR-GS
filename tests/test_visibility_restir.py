@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+import restir_gs.restir.proposal as proposal_module
 from restir_gs.lighting.deferred import PointLights
 from restir_gs.lighting.visibility import (
     ShadowMapBundle,
@@ -165,6 +166,24 @@ def test_cached_visibility_paths_match_uncached_paths() -> None:
     assert torch.allclose(cached_reservoir.W, reservoir.W)
     assert torch.equal(reused_reservoir.light_indices, cached_reservoir.light_indices)
     assert torch.allclose(reused_reservoir.W, cached_reservoir.W)
+
+
+def test_cached_visibility_geometric_proposal_uses_dense_cache_without_gather(monkeypatch) -> None:
+    gbuffer = make_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    lights = make_two_lights()
+    shadow = make_shadow_bundle(depths=[10.0, 1.0], alphas=[0.0, 1.0], depth_bias=0.0)
+    cache = make_shadow_visibility_cache(gbuffer, camera, shadow, pcf_radius=1)
+
+    expected = compute_visibility_geometric_proposal_distribution(gbuffer, camera, lights, shadow, pcf_radius=1)
+
+    def fail_gather(*_args, **_kwargs):
+        raise AssertionError("dense visibility cache should not regather all light indices")
+
+    monkeypatch.setattr(proposal_module, "gather_shadow_visibility", fail_gather)
+    actual = proposal_module.compute_visibility_geometric_proposal_distribution_cached(gbuffer, lights, cache)
+
+    assert torch.allclose(actual, expected)
 
 
 def test_invalid_pixels_produce_zero_visible_proposal_contribution() -> None:
