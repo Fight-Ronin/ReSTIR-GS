@@ -2,8 +2,7 @@
 
 Windows-native prototype for visibility-aware ReSTIR over aligned 3D Gaussian Splatting assets.
 
-The current codebase is organized around one active baseline: registered aligned assets are rendered with `gsplat`, converted into pseudo G-buffers, evaluated with visibility-aware direct lighting, sampled with a visibility-geometric proposal, and stabilized with a conservative previous-frame temporal path. Older synthetic demos, Voxel51 intake, single-view PLY experiments, standalone ablations, and spatial MIS diagnostics are no longer active source surfaces.
-
+The current codebase is organized around one active baseline: registered aligned assets are rendered with `gsplat`, converted into pseudo G-buffers, evaluated with visibility-aware direct lighting, sampled with a visibility-geometric proposal, and stabilized with a conservative previous-frame temporal path.
 ## Current Active Path
 
 ```text
