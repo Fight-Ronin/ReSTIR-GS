@@ -1,5 +1,10 @@
 # Phase 50: ReSTIR Visibility Optimization Plan
 
+Status: this phase is historical. The later closeout work moved to realtime
+display FPS profiling and selected-only candidate visibility experiments; see
+`docs/phase51_realtime_display_fps_optimization_plan.md` and
+`docs/phase55_project_wrap_up.md` for the current conclusion.
+
 ## Purpose
 
 Phase 50 turns the active visibility ReSTIR path from ad-hoc profiling into a
@@ -140,4 +145,3 @@ No temporal alpha or threshold tuning.
 No claim of speedup without a stable benchmark.
 No CUDA kernel fusion until the Python/Torch hot path is measured clearly.
 ```
-

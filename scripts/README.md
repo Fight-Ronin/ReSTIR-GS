@@ -122,11 +122,17 @@ Optionally set `RESTIRGS_VIEWER_CAMERA_CONFIG` for generic PLY mode.
 ```text
 download_aligned_asset.py              download registered aligned datasets
 download_aligned_splat.py              download registered aligned splats
+bench_realtime_display_fps.py          profile display FPS and selected-only visibility experiments
+eval_selected_fast_quality.py          compare selected-fast quality against dense-cache reference
 demo_24_aligned_asset_smoke_matrix.py  validate aligned assets and sampling basics
 demo_26_aligned_restir_renderer.py     run the active renderer/evaluator path
 demo_28_active_renderer_snapshot.py    build the compact demo/performance snapshot
 patch_gsplat_windows.py                verify or patch gsplat 1.5.x MSVC JIT flags
 ```
+
+`bench_realtime_display_fps.py --experimental-selected-visibility` and
+`eval_selected_fast_quality.py` are closeout experiment tools. They are useful
+for profiling and validation, but they do not change the default renderer path.
 
 The interactive implementation lives in `interactive/`:
 

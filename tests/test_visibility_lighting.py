@@ -6,7 +6,11 @@ import pytest
 from restir_gs.lighting.deferred import PointLights, shade_deferred_lambertian
 from restir_gs.lighting.visibility import (
     ShadowMapBundle,
+    evaluate_selected_light_visible_diffuse_selected_dense_fast,
+    evaluate_selected_light_visible_diffuse_selected_dense,
     evaluate_selected_light_visible_diffuse,
+    evaluate_shadow_visibility_selected_dense_fast,
+    evaluate_shadow_visibility_selected_dense,
     evaluate_shadow_visibility,
     make_light_camera,
     shade_deferred_lambertian_visible,
@@ -99,6 +103,196 @@ def test_dense_visibility_gathers_per_light_shadow_maps() -> None:
     )
 
     assert torch.allclose(visibility, torch.tensor([[[1.0, 0.0, 1.0]]]))
+
+
+def test_selected_dense_visibility_matches_existing_dense_path() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[0.0, 0.5], depth_bias=0.0)
+    light_indices = torch.tensor([[[0, 1, 0]]], dtype=torch.long)
+
+    existing = evaluate_shadow_visibility(
+        gbuffer,
+        camera,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+    selected = evaluate_shadow_visibility_selected_dense(
+        gbuffer,
+        camera,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(selected, existing)
+
+
+def test_selected_dense_fast_visibility_matches_reference_cpu_fallback() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[0.0, 0.5], depth_bias=0.0)
+    light_indices = torch.tensor([[[0, 1, 0]]], dtype=torch.long)
+
+    reference = evaluate_shadow_visibility_selected_dense(
+        gbuffer,
+        camera,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+    fast = evaluate_shadow_visibility_selected_dense_fast(
+        gbuffer,
+        camera,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(fast, reference)
+
+
+def test_selected_dense_fast_visibility_matches_reference_cuda() -> None:
+    if not torch.cuda.is_available():
+        return
+    device = torch.device("cuda")
+    gbuffer = move_gbuffer(make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0)), device)
+    camera = move_camera(make_identity_camera(), device)
+    shadow = move_shadow_bundle(make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[0.0, 0.5], depth_bias=0.0), device)
+    light_indices = torch.tensor([[[0, 1, 0, -1, 2, 1, 0, 1]]], dtype=torch.long, device=device)
+
+    reference = evaluate_shadow_visibility_selected_dense(
+        gbuffer,
+        camera,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+    fast = evaluate_shadow_visibility_selected_dense_fast(
+        gbuffer,
+        camera,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(fast, reference)
+
+
+def test_selected_dense_fast_visibility_matches_reference_cuda_distinct_light_cameras() -> None:
+    if not torch.cuda.is_available():
+        return
+    device = torch.device("cuda")
+    gbuffer = make_structured_gbuffer(device)
+    camera = make_identity_camera()
+    shadow = make_distinct_camera_shadow_bundle(device)
+    light_indices = torch.tensor(
+        [
+            [[0, 1, 2, -1], [1, 2, 0, 3]],
+            [[2, 0, 1, 0], [0, 2, 1, 2]],
+        ],
+        dtype=torch.long,
+        device=device,
+    )
+    camera = move_camera(camera, device)
+
+    for pcf_radius in (0, 1):
+        reference = evaluate_shadow_visibility_selected_dense(
+            gbuffer,
+            camera,
+            shadow,
+            light_indices,
+            alpha_threshold=0.0,
+            pcf_radius=pcf_radius,
+        )
+        fast = evaluate_shadow_visibility_selected_dense_fast(
+            gbuffer,
+            camera,
+            shadow,
+            light_indices,
+            alpha_threshold=0.0,
+            pcf_radius=pcf_radius,
+        )
+
+        assert torch.allclose(fast, reference)
+
+
+def test_selected_dense_visibility_matches_dense_invalid_indices() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    shadow = make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[0.0, 0.5], depth_bias=0.0)
+    light_indices = torch.tensor([[[-1, 2, 1]]], dtype=torch.long)
+
+    existing = evaluate_shadow_visibility(gbuffer, camera, shadow, light_indices, alpha_threshold=0.0)
+    selected = evaluate_shadow_visibility_selected_dense(gbuffer, camera, shadow, light_indices, alpha_threshold=0.0)
+
+    assert torch.allclose(selected, existing)
+    assert torch.allclose(selected, torch.tensor([[[0.0, 0.0, 0.5]]]))
+
+
+def test_selected_dense_fast_visible_diffuse_matches_reference_cpu_fallback() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    lights = make_two_lights()
+    shadow = make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[0.0, 0.5], depth_bias=0.0)
+    light_indices = torch.tensor([[[0, 1, 0]]], dtype=torch.long)
+
+    reference = evaluate_selected_light_visible_diffuse_selected_dense(
+        gbuffer,
+        camera,
+        lights,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+    fast = evaluate_selected_light_visible_diffuse_selected_dense_fast(
+        gbuffer,
+        camera,
+        lights,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(fast, reference)
+
+
+def test_selected_dense_visible_diffuse_matches_existing_dense_path() -> None:
+    gbuffer = make_single_pixel_gbuffer(position=(0.0, 0.0, 2.0))
+    camera = make_identity_camera()
+    lights = make_two_lights()
+    shadow = make_two_light_shadow_bundle(depths=[3.0, 1.0], alphas=[0.0, 0.5], depth_bias=0.0)
+    light_indices = torch.tensor([[[0, 1, 0]]], dtype=torch.long)
+
+    existing = evaluate_selected_light_visible_diffuse(
+        gbuffer,
+        camera,
+        lights,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+    selected = evaluate_selected_light_visible_diffuse_selected_dense(
+        gbuffer,
+        camera,
+        lights,
+        shadow,
+        light_indices,
+        alpha_threshold=0.0,
+        pcf_radius=1,
+    )
+
+    assert torch.allclose(selected, existing)
 
 
 def test_low_shadow_alpha_means_no_blocker() -> None:
@@ -296,9 +490,124 @@ def make_two_light_shadow_bundle(depths: list[float], alphas: list[float], depth
     )
 
 
+def make_distinct_camera_shadow_bundle(device: torch.device) -> ShadowMapBundle:
+    viewmats = torch.eye(4, dtype=torch.float32).repeat(3, 1, 1)
+    viewmats[1, 0, 3] = 0.5
+    viewmats[2, 1, 3] = -0.5
+    intrinsics = torch.tensor(
+        [
+            [[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[1.5, 0.0, 1.0], [0.0, 0.5, 2.0], [0.0, 0.0, 1.0]],
+        ],
+        dtype=torch.float32,
+    )
+    light_cameras = [
+        PinholeCamera(
+            viewmats=viewmats[index : index + 1].to(device),
+            intrinsics=intrinsics[index : index + 1].to(device),
+            width=3,
+            height=3,
+        )
+        for index in range(3)
+    ]
+    depth_maps = torch.tensor(
+        [
+            [[3.0, 3.0, 1.0], [3.0, 3.0, 1.0], [1.0, 1.0, 1.0]],
+            [[1.0, 1.0, 3.0], [1.0, 3.0, 3.0], [3.0, 3.0, 3.0]],
+            [[3.0, 1.0, 3.0], [1.0, 3.0, 1.0], [3.0, 1.0, 3.0]],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    alpha_maps = torch.tensor(
+        [
+            [[0.0, 0.5, 1.0], [0.25, 0.75, 1.0], [1.0, 1.0, 1.0]],
+            [[1.0, 0.25, 0.0], [0.5, 0.0, 0.25], [0.0, 0.5, 1.0]],
+            [[0.0, 1.0, 0.0], [1.0, 0.5, 1.0], [0.25, 0.75, 0.0]],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    return ShadowMapBundle(
+        light_indices=torch.arange(3, dtype=torch.long, device=device),
+        light_cameras=light_cameras,
+        depth_maps=depth_maps,
+        alpha_maps=alpha_maps,
+        scene_radius=1.0,
+        depth_bias=0.0,
+    )
+
+
 def make_lights() -> PointLights:
     return PointLights(
         positions_cam=torch.tensor([[0.0, 0.0, 2.0]], dtype=torch.float32),
         colors=torch.ones((1, 3), dtype=torch.float32),
         intensities=torch.ones((1,), dtype=torch.float32),
+    )
+
+
+def make_two_lights() -> PointLights:
+    return PointLights(
+        positions_cam=torch.tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]], dtype=torch.float32),
+        colors=torch.ones((2, 3), dtype=torch.float32),
+        intensities=torch.ones((2,), dtype=torch.float32),
+    )
+
+
+def move_gbuffer(gbuffer: GBuffer, device: torch.device) -> GBuffer:
+    return GBuffer(
+        rgb=gbuffer.rgb.to(device),
+        depth=gbuffer.depth.to(device),
+        alpha=gbuffer.alpha.to(device),
+        position_cam=gbuffer.position_cam.to(device),
+        normal_cam=gbuffer.normal_cam.to(device),
+        valid_mask=gbuffer.valid_mask.to(device),
+        normal_mask=gbuffer.normal_mask.to(device),
+    )
+
+
+def move_camera(camera: PinholeCamera, device: torch.device) -> PinholeCamera:
+    return PinholeCamera(
+        viewmats=camera.viewmats.to(device),
+        intrinsics=camera.intrinsics.to(device),
+        width=camera.width,
+        height=camera.height,
+    )
+
+
+def move_shadow_bundle(shadow: ShadowMapBundle, device: torch.device) -> ShadowMapBundle:
+    return ShadowMapBundle(
+        light_indices=shadow.light_indices.to(device),
+        light_cameras=[move_camera(light_camera, device) for light_camera in shadow.light_cameras],
+        depth_maps=shadow.depth_maps.to(device),
+        alpha_maps=shadow.alpha_maps.to(device),
+        scene_radius=shadow.scene_radius,
+        depth_bias=shadow.depth_bias,
+    )
+
+
+def make_structured_gbuffer(device: torch.device) -> GBuffer:
+    return GBuffer(
+        rgb=torch.ones((2, 2, 3), dtype=torch.float32, device=device),
+        depth=torch.ones((2, 2), dtype=torch.float32, device=device),
+        alpha=torch.ones((2, 2), dtype=torch.float32, device=device),
+        position_cam=torch.tensor(
+            [
+                [[0.0, 0.0, 2.0], [0.5, 0.0, 2.0]],
+                [[0.0, 0.5, 2.0], [0.5, 0.5, 2.0]],
+            ],
+            dtype=torch.float32,
+            device=device,
+        ),
+        normal_cam=torch.tensor(
+            [
+                [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+                [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+            ],
+            dtype=torch.float32,
+            device=device,
+        ),
+        valid_mask=torch.tensor([[True, True], [False, True]], device=device),
+        normal_mask=torch.tensor([[True, True], [True, False]], device=device),
     )

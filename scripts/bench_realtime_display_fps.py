@@ -17,7 +17,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from restir_gs.lighting.asset_lights import make_asset_scaled_world_lights, world_lights_to_camera_lights
-from restir_gs.lighting.visibility import make_shadow_map_bundle
+from restir_gs.lighting.visibility import (
+    evaluate_selected_light_visible_diffuse_selected_dense,
+    evaluate_selected_light_visible_diffuse_selected_dense_fast,
+    make_shadow_map_bundle,
+)
 from restir_gs.render.aligned_asset_registry import (
     DEFAULT_MANIFEST_PATH,
     get_aligned_asset_spec,
@@ -35,8 +39,17 @@ from restir_gs.restir.renderer import (
     RestirHistory,
     RestirRenderSettings,
     _FrameStageTimer,
+    apply_confidence_clamped_temporal_filter,
+    empty_temporal_filter_stats,
+    empty_temporal_lookup,
     evaluate_restir_display_frame_from_gbuffer,
 )
+from restir_gs.restir.proposal import (
+    compute_geometric_proposal_distribution,
+    sample_light_candidates_from_distribution,
+)
+from restir_gs.restir.temporal import combine_temporal_reservoirs, reproject_current_to_previous, temporal_reservoir_from_initial
+from restir_gs.restir.visibility import estimate_visibility_ris_initial_lighting_cached
 
 
 DEFAULT_OUTPUT_DIR = Path("outputs/realtime_display_fps")
@@ -125,6 +138,156 @@ def render_display_frame_timed(
     return replace(result, timings=replace(result.timings, frame_wall_ms=wall_ms))
 
 
+def render_selected_visibility_frame_timed(
+    scene,
+    camera,
+    world_lights,
+    frame_index: int,
+    settings: RestirRenderSettings,
+    previous_history: RestirHistory | None,
+    shadow_bundle,
+    selected_visibility_impl: str = "reference",
+) -> tuple[RestirDisplayFrameResult, dict[str, float]]:
+    if shadow_bundle is None:
+        raise ValueError("Selected-only visibility experiment requires a shadow bundle.")
+    if selected_visibility_impl not in ("reference", "fast"):
+        raise ValueError(f"Unknown selected visibility implementation: {selected_visibility_impl}")
+    wall_start = time.perf_counter()
+    timer = _FrameStageTimer(scene.means.device)
+    selected_candidate_visibility_gpu_ms = 0.0
+
+    def evaluate_visible(light_indices: torch.Tensor) -> torch.Tensor:
+        if selected_visibility_impl == "fast":
+            return evaluate_selected_light_visible_diffuse_selected_dense_fast(
+                gbuffer,
+                camera,
+                lights,
+                shadow_bundle,
+                light_indices,
+                alpha_threshold=settings.visibility_shadow_alpha_threshold,
+                pcf_radius=settings.visibility_shadow_pcf_radius,
+            )
+        return evaluate_selected_light_visible_diffuse_selected_dense(
+            gbuffer,
+            camera,
+            lights,
+            shadow_bundle,
+            light_indices,
+            alpha_threshold=settings.visibility_shadow_alpha_threshold,
+            pcf_radius=settings.visibility_shadow_pcf_radius,
+        )
+
+    with torch.no_grad():
+        timer.mark("start")
+        render_buffers = render_rgbd(scene, camera)
+        timer.mark("after_render_rgbd")
+        gbuffer = make_pseudo_gbuffer(render_buffers, camera)
+        timer.mark("after_gbuffer")
+        lights = world_lights_to_camera_lights(world_lights, camera)
+        timer.mark("after_world_lights_to_camera")
+        timer.mark("after_reference_lighting")
+        valid_mask = gbuffer.valid_mask & gbuffer.normal_mask
+        valid_pixels = int(valid_mask.sum().detach().cpu())
+        if valid_pixels <= 0:
+            raise RuntimeError(f"Frame {frame_index} has no valid lighting pixels.")
+
+        proposal_distribution = compute_geometric_proposal_distribution(gbuffer, lights)
+        timer.mark("after_proposal_distribution")
+        samples = sample_light_candidates_from_distribution(
+            proposal_distribution,
+            settings.candidate_count,
+            seed=settings.candidate_seed_base + frame_index,
+            device=gbuffer.rgb.device,
+        )
+        timer.mark("after_proposal")
+        contribution_candidates, selected_candidate_visibility_gpu_ms = run_with_gpu_timing(
+            gbuffer.rgb.device,
+            lambda: evaluate_visible(samples.light_indices),
+        )
+        initial, initial_reservoir = estimate_visibility_ris_initial_lighting_cached(
+            gbuffer,
+            lights,
+            None,
+            samples.light_indices,
+            selection_seed=settings.initial_selection_seed_base + frame_index,
+            ambient=settings.ambient,
+            proposal_probs=samples.proposal_probs,
+            contribution_candidates=contribution_candidates,
+        )
+        timer.mark("after_initial_ris")
+
+        if previous_history is None:
+            lookup = empty_temporal_lookup(gbuffer)
+            timer.mark("after_temporal_lookup")
+            temporal = initial
+            temporal_reservoir = temporal_reservoir_from_initial(initial_reservoir)
+            timer.mark("after_temporal_ris")
+            temporal_filtered = initial
+            temporal_filter_stats = empty_temporal_filter_stats(gbuffer)
+            timer.mark("after_temporal_filter")
+        else:
+            lookup = reproject_current_to_previous(
+                gbuffer,
+                camera,
+                previous_history.gbuffer,
+                previous_history.camera,
+                depth_tolerance=settings.depth_tolerance,
+                normal_threshold=settings.temporal_normal_threshold,
+                rgb_threshold=settings.temporal_rgb_threshold,
+                max_motion_pixels=settings.temporal_max_motion_pixels,
+                search_radius=settings.temporal_reprojection_search_radius,
+            )
+            timer.mark("after_temporal_lookup")
+
+            temporal, temporal_reservoir = combine_temporal_reservoirs(
+                gbuffer,
+                lights,
+                initial,
+                initial_reservoir,
+                previous_history.reservoir,
+                lookup,
+                selection_seed=settings.temporal_selection_seed_base + frame_index,
+                ambient=settings.ambient,
+                target_mode="diffuse",
+                contribution_evaluator=evaluate_visible,
+                history_m_cap=settings.candidate_count if settings.temporal_history_m_cap is None else settings.temporal_history_m_cap,
+            )
+            timer.mark("after_temporal_ris")
+            temporal_filtered, temporal_filter_stats = apply_confidence_clamped_temporal_filter(
+                gbuffer,
+                initial,
+                previous_history.filtered,
+                lookup,
+                settings,
+            )
+            timer.mark("after_temporal_filter")
+
+        history = RestirHistory(gbuffer=gbuffer, camera=camera, reservoir=temporal_reservoir, filtered=temporal_filtered)
+        result = RestirDisplayFrameResult(
+            frame_index=frame_index,
+            camera=camera,
+            gbuffer=gbuffer,
+            lights=lights,
+            proposal_samples=samples,
+            geometric_mc=None,
+            initial=initial,
+            initial_reservoir=initial_reservoir,
+            temporal=temporal,
+            temporal_filtered=temporal_filtered,
+            temporal_reservoir=temporal_reservoir,
+            temporal_filter_stats=temporal_filter_stats,
+            lookup=lookup,
+            history=history,
+            shadow_bundle=shadow_bundle,
+            timings=timer.to_timings(),
+        )
+    wall_ms = (time.perf_counter() - wall_start) * 1000.0
+    extras = {
+        "selected_candidate_visibility_gpu_ms": float(selected_candidate_visibility_gpu_ms),
+    }
+    return replace(result, timings=replace(result.timings, frame_wall_ms=wall_ms)), extras
+
+
 def make_frame_row(
     asset_id: str,
     dataset_type: str,
@@ -136,6 +299,10 @@ def make_frame_row(
     settings: RestirRenderSettings,
     shadow_bundle_asset_gpu_ms: float,
     result: RestirDisplayFrameResult,
+    render_mode: str = "visibility_cache",
+    proposal_mode: str = "visibility_geometric",
+    selected_visibility_impl: str = "visibility_cache",
+    selected_candidate_visibility_gpu_ms: float = 0.0,
 ) -> dict[str, int | float | str]:
     timing_fields = result.timings.as_row_fields(shadow_bundle_asset_gpu_ms=shadow_bundle_asset_gpu_ms)
     valid_pixels = int(result.initial.valid_mask.sum().detach().cpu())
@@ -150,6 +317,9 @@ def make_frame_row(
         "width": int(width),
         "height": int(height),
         "target_mode": settings.target_mode,
+        "render_mode": render_mode,
+        "proposal_mode": proposal_mode,
+        "selected_visibility_impl": selected_visibility_impl,
         "num_lights": int(num_lights),
         "candidate_count": int(settings.candidate_count),
         "valid_pixels": valid_pixels,
@@ -160,6 +330,7 @@ def make_frame_row(
         "visibility_cache_gpu_ms": float(timing_fields["reference_lighting_gpu_ms"])
         if settings.target_mode == "visibility"
         else 0.0,
+        "selected_candidate_visibility_gpu_ms": float(selected_candidate_visibility_gpu_ms),
     }
     row.update(timing_fields)
     return row
@@ -264,6 +435,17 @@ def main() -> int:
     parser.add_argument("--ambient", type=float, default=0.2)
     parser.add_argument("--warmup-iters", type=int, default=1)
     parser.add_argument("--repeat-iters", type=int, default=3)
+    parser.add_argument(
+        "--experimental-selected-visibility",
+        action="store_true",
+        help="Use geometric proposal plus selected-only candidate visibility instead of the dense visibility cache path.",
+    )
+    parser.add_argument(
+        "--selected-visibility-impl",
+        choices=("reference", "fast"),
+        default="reference",
+        help="Selected-only visibility implementation used with --experimental-selected-visibility.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -278,6 +460,10 @@ def main() -> int:
         raise ValueError(f"Expected positive --candidate-count, got {args.candidate_count}")
     if args.warmup_iters < 0 or args.repeat_iters <= 0:
         raise ValueError("Expected --warmup-iters >= 0 and --repeat-iters > 0")
+    if args.experimental_selected_visibility and args.target_mode != "visibility":
+        raise ValueError("--experimental-selected-visibility requires --target-mode visibility")
+    if not args.experimental_selected_visibility and args.selected_visibility_impl != "reference":
+        raise ValueError("--selected-visibility-impl fast requires --experimental-selected-visibility")
 
     manifest = load_aligned_asset_manifest(args.manifest)
     asset_ids = resolve_requested_asset_ids(manifest, asset_ids=args.asset_ids, asset_set=args.asset_set)
@@ -308,6 +494,9 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, int | float | str]] = []
     asset_summaries: list[dict[str, Any]] = []
+    render_mode = "selected_visibility" if args.experimental_selected_visibility else "visibility_cache"
+    proposal_mode = "geometric_selected_visibility" if args.experimental_selected_visibility else "visibility_geometric"
+    selected_visibility_impl = args.selected_visibility_impl if args.experimental_selected_visibility else "visibility_cache"
     for asset_id in asset_ids:
         spec = get_aligned_asset_spec(manifest, asset_id)
         resolved = resolve_aligned_asset_paths(spec, repo_root=manifest.repo_root)
@@ -346,15 +535,27 @@ def main() -> int:
             previous: RestirHistory | None = None
             for frame_index in frame_indices:
                 camera = scale_camera(asset.transforms.frames[frame_index].camera, args.width, args.height)
-                result = render_display_frame_timed(
-                    asset.loaded.scene,
-                    camera,
-                    world_lights,
-                    frame_index=frame_index,
-                    settings=settings,
-                    previous_history=previous,
-                    shadow_bundle=shadow_bundle,
-                )
+                if args.experimental_selected_visibility:
+                    result, _ = render_selected_visibility_frame_timed(
+                        asset.loaded.scene,
+                        camera,
+                        world_lights,
+                        frame_index=frame_index,
+                        settings=settings,
+                        previous_history=previous,
+                        shadow_bundle=shadow_bundle,
+                        selected_visibility_impl=args.selected_visibility_impl,
+                    )
+                else:
+                    result = render_display_frame_timed(
+                        asset.loaded.scene,
+                        camera,
+                        world_lights,
+                        frame_index=frame_index,
+                        settings=settings,
+                        previous_history=previous,
+                        shadow_bundle=shadow_bundle,
+                    )
                 previous = result.history
 
         asset_rows: list[dict[str, int | float | str]] = []
@@ -362,15 +563,28 @@ def main() -> int:
             previous = None
             for frame_index in frame_indices:
                 camera = scale_camera(asset.transforms.frames[frame_index].camera, args.width, args.height)
-                result = render_display_frame_timed(
-                    asset.loaded.scene,
-                    camera,
-                    world_lights,
-                    frame_index=frame_index,
-                    settings=settings,
-                    previous_history=previous,
-                    shadow_bundle=shadow_bundle,
-                )
+                selected_extras: dict[str, float] = {}
+                if args.experimental_selected_visibility:
+                    result, selected_extras = render_selected_visibility_frame_timed(
+                        asset.loaded.scene,
+                        camera,
+                        world_lights,
+                        frame_index=frame_index,
+                        settings=settings,
+                        previous_history=previous,
+                        shadow_bundle=shadow_bundle,
+                        selected_visibility_impl=args.selected_visibility_impl,
+                    )
+                else:
+                    result = render_display_frame_timed(
+                        asset.loaded.scene,
+                        camera,
+                        world_lights,
+                        frame_index=frame_index,
+                        settings=settings,
+                        previous_history=previous,
+                        shadow_bundle=shadow_bundle,
+                    )
                 assert_display_frame_finite(result, asset_id, frame_index)
                 row = make_frame_row(
                     asset_id,
@@ -383,6 +597,10 @@ def main() -> int:
                     settings,
                     shadow_bundle_asset_gpu_ms,
                     result,
+                    render_mode=render_mode,
+                    proposal_mode=proposal_mode,
+                    selected_visibility_impl=selected_visibility_impl,
+                    selected_candidate_visibility_gpu_ms=float(selected_extras.get("selected_candidate_visibility_gpu_ms", 0.0)),
                 )
                 rows.append(row)
                 asset_rows.append(row)
@@ -421,6 +639,9 @@ def main() -> int:
         "render": {"width": args.width, "height": args.height, "device": str(device)},
         "settings": {
             "target_mode": args.target_mode,
+            "render_mode": render_mode,
+            "proposal_mode": proposal_mode,
+            "selected_visibility_impl": selected_visibility_impl,
             "num_lights": args.num_lights,
             "light_seed": args.light_seed,
             "light_space": "world",
@@ -434,6 +655,7 @@ def main() -> int:
             "visibility_shadow_bias_scale": args.visibility_shadow_bias_scale,
             "visibility_shadow_alpha_threshold": args.visibility_shadow_alpha_threshold,
             "visibility_shadow_pcf_radius": args.visibility_shadow_pcf_radius,
+            "experimental_selected_visibility": bool(args.experimental_selected_visibility),
         },
         "timing_summary": summarize_numeric_fields(rows, summary_fields()),
         "assets": asset_summaries,
@@ -449,6 +671,7 @@ def summary_fields() -> list[str]:
         "estimated_gpu_fps",
         "estimated_wall_fps",
         "visibility_cache_gpu_ms",
+        "selected_candidate_visibility_gpu_ms",
         *list(RESTIR_TIMING_FIELDS),
     ]
 

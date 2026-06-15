@@ -106,7 +106,7 @@ left drag      orbit yaw/pitch
 shift+left     pan camera target
 wheel          dolly focus distance
 [ / ]          previous / next aligned frame
-1-6            RGB / Alpha / Depth / Normal / Lambertian / Blinn-Phong
+1-6            RGB / Alpha / Depth / Normal / Lambertian / Blinn-Phong diagnostics
 Ctrl+S         save current camera and previews
 q              quit
 ```
@@ -145,14 +145,16 @@ The main cost is not `gsplat` RGB+D rendering, pseudo G-buffer generation, repro
 
 ## Recommended Future Work
 
-The next meaningful work should be a larger step, not more small parameter tuning:
+The project is currently in wrap-up mode. If work continues, keep it narrowly
+focused on realtime visibility performance and validate against the selected-fast
+quality harness before changing renderer defaults:
 
 ```text
 1. GPU performance engineering for visibility proposal and RIS light evaluation.
-2. Fused or batched kernels for direct-light contribution evaluation.
-3. Better visibility/shadow semantics.
-4. Larger aligned asset coverage.
-5. Production-quality interactive renderer path.
+2. Fused or batched kernels for selected/dense visible direct-light contribution evaluation.
+3. Small asset-matrix quality checks before adding or keeping new renderer knobs.
 ```
 
-Do not spend more time tuning temporal alpha, spatial reuse, or small ablations on the current 10-asset testing set unless a larger research question changes the objective.
+Do not spend more time tuning temporal alpha, spatial reuse, material objectives,
+or cheap proposal mixtures on the current testing set unless a larger research
+question changes the objective.

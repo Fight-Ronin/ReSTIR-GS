@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 import restir_gs.restir.proposal as proposal_module
@@ -150,6 +151,15 @@ def test_cached_visibility_paths_match_uncached_paths() -> None:
         selection_seed=23,
         contribution_candidates=contribution_candidates,
     )
+    direct_candidate_ris, direct_candidate_reservoir = estimate_visibility_ris_initial_lighting_cached(
+        gbuffer,
+        lights,
+        None,
+        samples.light_indices,
+        proposal_probs=samples.proposal_probs,
+        selection_seed=23,
+        contribution_candidates=contribution_candidates,
+    )
 
     assert torch.allclose(cached_reference.diffuse_rgb, reference.diffuse_rgb)
     assert torch.allclose(cached_reference.composite_rgb, reference.composite_rgb)
@@ -162,10 +172,23 @@ def test_cached_visibility_paths_match_uncached_paths() -> None:
     assert torch.allclose(cached_ris.composite_rgb, ris.composite_rgb)
     assert torch.allclose(reused_ris.contribution_rgb, cached_ris.contribution_rgb)
     assert torch.allclose(reused_ris.composite_rgb, cached_ris.composite_rgb)
+    assert torch.allclose(direct_candidate_ris.contribution_rgb, cached_ris.contribution_rgb)
+    assert torch.allclose(direct_candidate_ris.composite_rgb, cached_ris.composite_rgb)
     assert torch.equal(cached_reservoir.light_indices, reservoir.light_indices)
     assert torch.allclose(cached_reservoir.W, reservoir.W)
     assert torch.equal(reused_reservoir.light_indices, cached_reservoir.light_indices)
     assert torch.allclose(reused_reservoir.W, cached_reservoir.W)
+    assert torch.equal(direct_candidate_reservoir.light_indices, cached_reservoir.light_indices)
+    assert torch.allclose(direct_candidate_reservoir.W, cached_reservoir.W)
+
+
+def test_cached_visibility_ris_requires_cache_without_contribution_candidates() -> None:
+    gbuffer = make_gbuffer(position=(0.0, 0.0, 2.0))
+    lights = make_two_lights()
+    candidates = torch.tensor([[[0, 1]]], dtype=torch.long)
+
+    with pytest.raises(ValueError, match="visibility cache"):
+        estimate_visibility_ris_initial_lighting_cached(gbuffer, lights, None, candidates)
 
 
 def test_cached_visibility_geometric_proposal_uses_dense_cache_without_gather(monkeypatch) -> None:

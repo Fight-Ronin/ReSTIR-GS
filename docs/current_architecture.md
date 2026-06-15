@@ -10,9 +10,10 @@ configs/aligned_assets.json
 -> gsplat renderer: restir_gs.render.gsplat_renderer.render_rgbd
 -> pseudo G-buffer: restir_gs.render.gbuffer
 -> scene-stable world lights: restir_gs.lighting.asset_lights
--> visibility target: restir_gs.lighting.visibility
+-> visibility target: restir_gs.lighting.shadow_* + restir_gs.lighting.visible_lighting
 -> proposal / RIS: restir_gs.restir.proposal + restir_gs.restir.initial
--> temporal reuse/filter: restir_gs.restir.temporal + restir_gs.restir.renderer
+-> temporal reuse/filter: restir_gs.restir.temporal + restir_gs.restir.temporal_filter
+-> renderer orchestration/metrics facade: restir_gs.restir.renderer
 ```
 
 ## Active Scripts
@@ -20,6 +21,8 @@ configs/aligned_assets.json
 ```text
 scripts/download_aligned_asset.py
 scripts/download_aligned_splat.py
+scripts/bench_realtime_display_fps.py
+scripts/eval_selected_fast_quality.py
 scripts/demo_24_aligned_asset_smoke_matrix.py
 scripts/demo_26_aligned_restir_renderer.py
 scripts/demo_28_active_renderer_snapshot.py
@@ -32,7 +35,7 @@ scripts/run_interactive_viewer_windows.bat
 scripts/run_interactive_web_viewer_windows.bat
 ```
 
-`interactive.launcher` is the matplotlib viewer launcher and data adapter. `interactive.web_server` serves the browser prototype over the same session/rendering boundary. `scripts/demo_22_interactive_viewer.py` remains a compatibility wrapper.
+`interactive.launcher` is the matplotlib viewer launcher and data adapter. `interactive.web_server` serves the browser prototype over the same session/rendering boundary.
 
 ## Core Packages
 
@@ -58,16 +61,26 @@ scripts/run_interactive_web_viewer_windows.bat
 `restir_gs.lighting`
 
 - `asset_lights.py`: scene-stable world lights and camera-space conversion.
-- `deferred.py`: Lambertian and Blinn-Phong deferred lighting helpers.
-- `visibility.py`: shadow-map proxy and PCF-filtered visibility-aware direct lighting.
+- `deferred.py`: diffuse and Blinn-Phong diagnostic helpers retained for compatibility; they are not the current optimization target.
+- `shadow_maps.py`: shadow-map camera setup and expected-depth shadow-map bundle rendering.
+- `shadow_visibility.py`: dense/cache/selected shadow-map visibility evaluation.
+- `visible_lighting.py`: visibility-aware direct diffuse lighting wrappers.
+- `visibility.py`: compatibility facade that re-exports the visibility API.
 
 `restir_gs.restir`
 
 - `proposal.py`: geometric and visibility-geometric proposal distributions.
 - `initial.py`: MC/RIS estimators and reservoir state.
 - `temporal.py`: reprojection lookup, compatibility diagnostics, and reservoir combine.
+- `temporal_filter.py`: confidence-weighted temporal RGB filter and empty temporal lookup/stat helpers.
 - `visibility.py`: visibility-aware MC/RIS estimator wrappers.
-- `renderer.py`: active renderer composition layer. It exposes a reference-free display frame path for interactive inspection and an evaluation frame path for all-lights references, metric rows, and GPU-event timing fields.
+- `types.py`: renderer settings, frame result dataclasses, and GPU-event timing field definitions.
+- `metrics.py`: ReSTIR metric rows, timing summaries, finite-value checks, and small metric helpers.
+- `renderer.py`: active renderer composition layer and compatibility facade. It exposes a reference-free display frame path for interactive inspection and an evaluation frame path for all-lights references.
+
+Selected-only visibility is deliberately kept outside the default renderer. Use
+`scripts/bench_realtime_display_fps.py --experimental-selected-visibility` and
+`scripts/eval_selected_fast_quality.py` to profile or validate it.
 
 `restir_gs.eval`
 

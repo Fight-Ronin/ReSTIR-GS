@@ -81,7 +81,7 @@ left drag      orbit yaw/pitch
 shift+left     pan camera target
 wheel          dolly focus distance
 [ / ]          previous / next aligned frame
-1-6            RGB / Alpha / Depth / Normal / Lambertian / Blinn-Phong
+1-6            RGB / Alpha / Depth / Normal / Lambertian / Blinn-Phong diagnostics
 Ctrl+S         save current camera and previews
 q              quit
 ```
@@ -101,7 +101,20 @@ preferred output = temporal_filtered_ris
 
 The active renderer records GPU-event stage timings in `restir_renderer_rows.csv` and summarizes them in `restir_renderer_summary.json`. Treat GPU timing fields as the performance source of truth; `frame_wall_ms` is auxiliary orchestration context.
 
-Diffuse, standalone ablation, Voxel51, and single-view PLY workflows are no longer active source surfaces.
+Diffuse/material diagnostics, standalone ablation, Voxel51, and single-view PLY workflows are no longer active source surfaces.
+
+## Closeout Performance Tools
+
+The realtime FPS and selected-fast quality tools are retained as explicit
+experiments, not as default renderer policy:
+
+```powershell
+python scripts/bench_realtime_display_fps.py --asset-ids dxgl_apple --target-mode visibility --experimental-selected-visibility --selected-visibility-impl fast
+python scripts/eval_selected_fast_quality.py --asset-ids dxgl_apple
+```
+
+Use these when evaluating future rasterization-side visibility changes. The
+default active renderer remains the dense-cache visibility-geometric path.
 
 ## Display Versus Evaluation
 

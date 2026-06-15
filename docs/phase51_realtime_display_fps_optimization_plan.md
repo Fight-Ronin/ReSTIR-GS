@@ -1,5 +1,10 @@
 # Phase 51: Real-Time Display FPS Optimization Plan
 
+Status: this phase is historical. The deferred selected-only visibility idea was
+implemented and measured as an explicit experiment in phases 52-55. The final
+default renderer policy remains dense-cache visibility-geometric; selected-fast
+is retained only for profiling and quality validation.
+
 ## Context
 
 The active project direction is the rasterized G-buffer/ReSTIR path, not a

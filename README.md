@@ -119,7 +119,7 @@ left drag      orbit yaw/pitch
 shift+left     pan camera target
 wheel          dolly focus distance
 [ / ]          previous / next aligned frame
-1-6            RGB / Alpha / Depth / Normal / Lambertian / Blinn-Phong
+1-6            RGB / Alpha / Depth / Normal / Lambertian / Blinn-Phong diagnostics
 Ctrl+S         save current camera and previews
 q              quit
 ```
@@ -169,6 +169,9 @@ restir_gs/render/dxgl_asset.py
 restir_gs/render/ply_loader.py
 restir_gs/render/gbuffer.py
 restir_gs/lighting/asset_lights.py
+restir_gs/lighting/shadow_maps.py
+restir_gs/lighting/shadow_visibility.py
+restir_gs/lighting/visible_lighting.py
 restir_gs/lighting/visibility.py
 restir_gs/restir/proposal.py
 restir_gs/restir/visibility.py

@@ -5,9 +5,9 @@ from dataclasses import dataclass
 import torch
 
 from restir_gs.lighting.deferred import PointLights
-from restir_gs.lighting.visibility import (
-    ShadowMapBundle,
-    ShadowVisibilityCache,
+from restir_gs.lighting.shadow_maps import ShadowMapBundle
+from restir_gs.lighting.shadow_visibility import ShadowVisibilityCache
+from restir_gs.lighting.visible_lighting import (
     evaluate_selected_light_visible_diffuse,
     evaluate_selected_light_visible_diffuse_cached,
 )
@@ -185,7 +185,7 @@ def estimate_visibility_ris_initial_lighting(
 def estimate_visibility_ris_initial_lighting_cached(
     gbuffer: GBuffer,
     lights: PointLights,
-    visibility_cache: ShadowVisibilityCache,
+    visibility_cache: ShadowVisibilityCache | None,
     candidates: torch.Tensor,
     selection_seed: int = 2029,
     ambient: float = 0.2,
@@ -278,13 +278,15 @@ def _check_samples(samples: CandidateSamples) -> None:
 def _cached_contribution_candidates(
     gbuffer: GBuffer,
     lights: PointLights,
-    visibility_cache: ShadowVisibilityCache,
+    visibility_cache: ShadowVisibilityCache | None,
     candidates: torch.Tensor,
     two_sided: bool,
     distance_epsilon: float,
     contribution_candidates: torch.Tensor | None,
 ) -> torch.Tensor:
     if contribution_candidates is None:
+        if visibility_cache is None:
+            raise ValueError("Expected a visibility cache when contribution candidates are not provided.")
         return evaluate_selected_light_visible_diffuse_cached(
             gbuffer,
             lights,

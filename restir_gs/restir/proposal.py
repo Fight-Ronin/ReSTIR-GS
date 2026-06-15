@@ -5,7 +5,8 @@ from dataclasses import dataclass
 import torch
 
 from restir_gs.lighting.deferred import PointLights
-from restir_gs.lighting.visibility import ShadowMapBundle, ShadowVisibilityCache, evaluate_shadow_visibility, gather_shadow_visibility
+from restir_gs.lighting.shadow_maps import ShadowMapBundle
+from restir_gs.lighting.shadow_visibility import ShadowVisibilityCache, evaluate_shadow_visibility, gather_shadow_visibility
 from restir_gs.render.gbuffer import GBuffer
 from restir_gs.render.synthetic_scene import PinholeCamera
 

@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-import math
+from dataclasses import replace
 import time
-from typing import Literal
 
 import torch
 
 from restir_gs.lighting.asset_lights import WorldPointLights, world_lights_to_camera_lights
 from restir_gs.lighting.deferred import LightingBuffers, PointLights, shade_deferred_lambertian
-from restir_gs.lighting.visibility import (
+from restir_gs.lighting.shadow_maps import (
     ShadowMapBundle,
-    ShadowVisibilityCache,
-    evaluate_selected_light_visible_diffuse_cached,
-    make_shadow_visibility_cache,
     make_shadow_map_bundle,
+)
+from restir_gs.lighting.shadow_visibility import (
+    ShadowVisibilityCache,
+    make_shadow_visibility_cache,
+)
+from restir_gs.lighting.visible_lighting import (
+    evaluate_selected_light_visible_diffuse_cached,
     shade_deferred_lambertian_visible_cached,
 )
-from restir_gs.metrics import compute_rgb_error_metrics
 from restir_gs.render.gbuffer import GBuffer, make_pseudo_gbuffer
 from restir_gs.render.gsplat_renderer import render_rgbd
 from restir_gs.render.synthetic_scene import PinholeCamera, SyntheticGaussians
@@ -34,6 +35,20 @@ from restir_gs.restir.proposal import (
     compute_visibility_geometric_proposal_distribution_cached,
     sample_light_candidates_from_distribution,
 )
+from restir_gs.restir.metrics import (
+    all_numeric_finite,
+    make_restir_metric_rows,
+    masked_mean,
+    reservoir_m_stats,
+    summarize_restir_asset_timing_rows,
+    summarize_restir_rows,
+    summarize_restir_timing_rows,
+)
+from restir_gs.restir.temporal_filter import (
+    apply_confidence_clamped_temporal_filter,
+    empty_temporal_filter_stats,
+    empty_temporal_lookup,
+)
 from restir_gs.restir.temporal import (
     TemporalLookup,
     TemporalReservoirState,
@@ -41,150 +56,20 @@ from restir_gs.restir.temporal import (
     reproject_current_to_previous,
     temporal_reservoir_from_initial,
 )
+from restir_gs.restir.types import (
+    RESTIR_TIMING_FIELDS,
+    RestirDisplayFrameResult,
+    RestirFrameResult,
+    RestirFrameTimings,
+    RestirHistory,
+    RestirRenderSettings,
+    RestirTargetMode,
+    TemporalFilterStats,
+)
 from restir_gs.restir.visibility import (
     estimate_visibility_proposal_lighting_cached,
     estimate_visibility_ris_initial_lighting_cached,
 )
-
-
-RestirTargetMode = Literal["diffuse", "visibility"]
-
-
-RESTIR_TIMING_FIELDS = (
-    "render_rgbd_gpu_ms",
-    "gbuffer_gpu_ms",
-    "world_lights_to_camera_gpu_ms",
-    "reference_lighting_gpu_ms",
-    "proposal_distribution_gpu_ms",
-    "proposal_sampling_gpu_ms",
-    "proposal_gpu_ms",
-    "initial_ris_gpu_ms",
-    "temporal_lookup_gpu_ms",
-    "temporal_ris_gpu_ms",
-    "temporal_filter_gpu_ms",
-    "frame_gpu_ms",
-    "frame_wall_ms",
-    "shadow_bundle_asset_gpu_ms",
-)
-
-
-@dataclass(frozen=True)
-class RestirFrameTimings:
-    render_rgbd_gpu_ms: float = 0.0
-    gbuffer_gpu_ms: float = 0.0
-    world_lights_to_camera_gpu_ms: float = 0.0
-    reference_lighting_gpu_ms: float = 0.0
-    proposal_distribution_gpu_ms: float = 0.0
-    proposal_sampling_gpu_ms: float = 0.0
-    proposal_gpu_ms: float = 0.0
-    initial_ris_gpu_ms: float = 0.0
-    temporal_lookup_gpu_ms: float = 0.0
-    temporal_ris_gpu_ms: float = 0.0
-    temporal_filter_gpu_ms: float = 0.0
-    frame_gpu_ms: float = 0.0
-    frame_wall_ms: float = 0.0
-    shadow_bundle_asset_gpu_ms: float = 0.0
-
-    def as_row_fields(self, shadow_bundle_asset_gpu_ms: float | None = None) -> dict[str, float]:
-        shadow_ms = self.shadow_bundle_asset_gpu_ms if shadow_bundle_asset_gpu_ms is None else float(shadow_bundle_asset_gpu_ms)
-        return {
-            "render_rgbd_gpu_ms": float(self.render_rgbd_gpu_ms),
-            "gbuffer_gpu_ms": float(self.gbuffer_gpu_ms),
-            "world_lights_to_camera_gpu_ms": float(self.world_lights_to_camera_gpu_ms),
-            "reference_lighting_gpu_ms": float(self.reference_lighting_gpu_ms),
-            "proposal_distribution_gpu_ms": float(self.proposal_distribution_gpu_ms),
-            "proposal_sampling_gpu_ms": float(self.proposal_sampling_gpu_ms),
-            "proposal_gpu_ms": float(self.proposal_gpu_ms),
-            "initial_ris_gpu_ms": float(self.initial_ris_gpu_ms),
-            "temporal_lookup_gpu_ms": float(self.temporal_lookup_gpu_ms),
-            "temporal_ris_gpu_ms": float(self.temporal_ris_gpu_ms),
-            "temporal_filter_gpu_ms": float(self.temporal_filter_gpu_ms),
-            "frame_gpu_ms": float(self.frame_gpu_ms),
-            "frame_wall_ms": float(self.frame_wall_ms),
-            "shadow_bundle_asset_gpu_ms": shadow_ms,
-        }
-
-
-@dataclass(frozen=True)
-class RestirRenderSettings:
-    target_mode: RestirTargetMode = "diffuse"
-    candidate_count: int = 8
-    candidate_seed_base: int = 31100
-    initial_selection_seed_base: int = 32100
-    temporal_selection_seed_base: int = 33100
-    depth_tolerance: float = 0.05
-    temporal_normal_threshold: float | None = 0.85
-    temporal_rgb_threshold: float | None = 0.20
-    temporal_max_motion_pixels: float | None = 32.0
-    temporal_reprojection_search_radius: int = 1
-    temporal_history_m_cap: int | None = None
-    temporal_filter_blend_max: float = 0.15
-    temporal_filter_clamp_scale: float = 0.50
-    temporal_filter_clamp_min: float = 1e-5
-    ambient: float = 0.2
-    include_mc_baseline: bool = False
-    visibility_shadow_resolution: int = 128
-    visibility_shadow_bias_scale: float = 0.02
-    visibility_shadow_alpha_threshold: float = 1e-4
-    visibility_shadow_pcf_radius: int = 1
-    visibility_shadow_bbox_percentile: float = 0.98
-
-
-@dataclass(frozen=True)
-class RestirHistory:
-    gbuffer: GBuffer
-    camera: PinholeCamera
-    reservoir: TemporalReservoirState
-    filtered: LightingEstimatorBuffers
-
-
-@dataclass(frozen=True)
-class TemporalFilterStats:
-    confidence: torch.Tensor
-    alpha: torch.Tensor
-    history_delta: torch.Tensor
-    clamp_delta: torch.Tensor
-
-
-@dataclass(frozen=True)
-class RestirDisplayFrameResult:
-    frame_index: int
-    camera: PinholeCamera
-    gbuffer: GBuffer
-    lights: PointLights
-    proposal_samples: CandidateSamples
-    geometric_mc: LightingEstimatorBuffers | None
-    initial: LightingEstimatorBuffers
-    initial_reservoir: ReservoirState
-    temporal: LightingEstimatorBuffers
-    temporal_filtered: LightingEstimatorBuffers
-    temporal_reservoir: TemporalReservoirState
-    temporal_filter_stats: TemporalFilterStats
-    lookup: TemporalLookup
-    history: RestirHistory
-    shadow_bundle: ShadowMapBundle | None = None
-    timings: RestirFrameTimings = RestirFrameTimings()
-
-
-@dataclass(frozen=True)
-class RestirFrameResult:
-    frame_index: int
-    camera: PinholeCamera
-    gbuffer: GBuffer
-    lights: PointLights
-    reference: LightingBuffers
-    proposal_samples: CandidateSamples
-    geometric_mc: LightingEstimatorBuffers | None
-    initial: LightingEstimatorBuffers
-    initial_reservoir: ReservoirState
-    temporal: LightingEstimatorBuffers
-    temporal_filtered: LightingEstimatorBuffers
-    temporal_reservoir: TemporalReservoirState
-    temporal_filter_stats: TemporalFilterStats
-    lookup: TemporalLookup
-    history: RestirHistory
-    shadow_bundle: ShadowMapBundle | None = None
-    timings: RestirFrameTimings = RestirFrameTimings()
 
 
 class _FrameStageTimer:
@@ -513,308 +398,6 @@ def _evaluate_restir_frame_core(
     return display, reference
 
 
-def make_restir_metric_rows(
-    asset_id: str,
-    result: RestirFrameResult,
-    settings: RestirRenderSettings,
-    shadow_bundle_asset_gpu_ms: float | None = None,
-) -> list[dict[str, int | float | str]]:
-    valid_mask = result.reference.valid_mask
-    valid_pixels = int(valid_mask.sum().detach().cpu())
-    pre_gate_pixels = int(result.lookup.pre_gate_mask.sum().detach().cpu())
-    pre_gate_fraction = pre_gate_pixels / float(max(valid_pixels, 1))
-    reuse_pixels = int(result.lookup.valid_mask.sum().detach().cpu())
-    reuse_fraction = reuse_pixels / float(max(valid_pixels, 1))
-    normal_gate_pixels = int(result.lookup.normal_pass_mask.sum().detach().cpu())
-    rgb_gate_pixels = int(result.lookup.rgb_pass_mask.sum().detach().cpu())
-    motion_gate_pixels = int(result.lookup.motion_pass_mask.sum().detach().cpu())
-    normal_gate_fraction = normal_gate_pixels / float(max(valid_pixels, 1))
-    rgb_gate_fraction = rgb_gate_pixels / float(max(valid_pixels, 1))
-    motion_gate_fraction = motion_gate_pixels / float(max(valid_pixels, 1))
-    normal_gate_pre_gate_fraction = normal_gate_pixels / float(max(pre_gate_pixels, 1))
-    rgb_gate_pre_gate_fraction = rgb_gate_pixels / float(max(pre_gate_pixels, 1))
-    motion_gate_pre_gate_fraction = motion_gate_pixels / float(max(pre_gate_pixels, 1))
-    mean_depth_error = masked_mean(result.lookup.relative_depth_error, result.lookup.valid_mask)
-    mean_normal_dot = masked_mean(result.lookup.normal_dot, result.lookup.valid_mask)
-    mean_normal_abs_dot = masked_mean(result.lookup.normal_abs_dot, result.lookup.valid_mask)
-    mean_rgb_distance = masked_mean(result.lookup.rgb_distance, result.lookup.valid_mask)
-    motion_magnitude = torch.linalg.norm(result.lookup.motion_pixels, dim=-1)
-    mean_motion = masked_mean(motion_magnitude, result.lookup.valid_mask)
-    mean_pre_gate_normal_dot = masked_mean(result.lookup.normal_dot, result.lookup.pre_gate_mask)
-    mean_pre_gate_normal_abs_dot = masked_mean(result.lookup.normal_abs_dot, result.lookup.pre_gate_mask)
-    mean_pre_gate_rgb_distance = masked_mean(result.lookup.rgb_distance, result.lookup.pre_gate_mask)
-    mean_pre_gate_motion = masked_mean(motion_magnitude, result.lookup.pre_gate_mask)
-    filter_confidence_mean = masked_mean(result.temporal_filter_stats.confidence, result.lookup.valid_mask)
-    filter_alpha_mean = masked_mean(result.temporal_filter_stats.alpha, valid_mask)
-    filter_alpha_max = float(result.temporal_filter_stats.alpha.detach().cpu().max()) if result.temporal_filter_stats.alpha.numel() else 0.0
-    filter_history_delta_mean = masked_mean(result.temporal_filter_stats.history_delta, result.lookup.valid_mask)
-    filter_clamp_delta_mean = masked_mean(result.temporal_filter_stats.clamp_delta, result.lookup.valid_mask)
-    timing_fields = result.timings.as_row_fields(shadow_bundle_asset_gpu_ms)
-
-    rows: list[dict[str, int | float | str]] = []
-    for estimator, buffers, reservoir in (
-        ("initial_ris", result.initial, result.initial_reservoir),
-        ("temporal_ris", result.temporal, result.temporal_reservoir),
-        ("temporal_filtered_ris", result.temporal_filtered, result.temporal_reservoir),
-    ):
-        m_mean, m_max = reservoir_m_stats(reservoir)
-        for quantity, estimate, reference in (
-            ("contribution_rgb", buffers.contribution_rgb, result.reference.diffuse_rgb),
-            ("composite_rgb", buffers.composite_rgb, result.reference.composite_rgb),
-        ):
-            row: dict[str, int | float | str] = {
-                "asset_id": asset_id,
-                "frame_index": result.frame_index,
-                "estimator": estimator,
-                "reference_quantity": quantity,
-                "target_mode": settings.target_mode,
-                "proposal": _effective_proposal(settings),
-                "k": settings.candidate_count,
-                "candidate_seed": settings.candidate_seed_base + result.frame_index,
-                "selection_seed": (
-                    settings.initial_selection_seed_base + result.frame_index
-                    if estimator == "initial_ris"
-                    else settings.temporal_selection_seed_base + result.frame_index
-                ),
-                "valid_pixels": valid_pixels,
-                "pre_gate_pixels": pre_gate_pixels,
-                "pre_gate_fraction": pre_gate_fraction,
-                "normal_gate_pass_pixels": normal_gate_pixels,
-                "normal_gate_pass_fraction": normal_gate_fraction,
-                "normal_gate_pass_pre_gate_fraction": normal_gate_pre_gate_fraction,
-                "rgb_gate_pass_pixels": rgb_gate_pixels,
-                "rgb_gate_pass_fraction": rgb_gate_fraction,
-                "rgb_gate_pass_pre_gate_fraction": rgb_gate_pre_gate_fraction,
-                "motion_gate_pass_pixels": motion_gate_pixels,
-                "motion_gate_pass_fraction": motion_gate_fraction,
-                "motion_gate_pass_pre_gate_fraction": motion_gate_pre_gate_fraction,
-                "reuse_pixels": reuse_pixels,
-                "reuse_fraction": reuse_fraction,
-                "mean_relative_depth_error": mean_depth_error,
-                "mean_temporal_normal_dot": mean_normal_dot,
-                "mean_temporal_normal_abs_dot": mean_normal_abs_dot,
-                "mean_temporal_rgb_distance": mean_rgb_distance,
-                "mean_motion_pixels": mean_motion,
-                "mean_pre_gate_normal_dot": mean_pre_gate_normal_dot,
-                "mean_pre_gate_normal_abs_dot": mean_pre_gate_normal_abs_dot,
-                "mean_pre_gate_rgb_distance": mean_pre_gate_rgb_distance,
-                "mean_pre_gate_motion_pixels": mean_pre_gate_motion,
-                "temporal_normal_threshold": _format_optional_float(settings.temporal_normal_threshold),
-                "temporal_rgb_threshold": _format_optional_float(settings.temporal_rgb_threshold),
-                "temporal_max_motion_pixels": _format_optional_float(settings.temporal_max_motion_pixels),
-                "temporal_reprojection_search_radius": int(settings.temporal_reprojection_search_radius),
-                "temporal_history_m_cap": _effective_temporal_history_m_cap(settings),
-                "temporal_filter_blend_max": float(settings.temporal_filter_blend_max),
-                "temporal_filter_clamp_scale": float(settings.temporal_filter_clamp_scale),
-                "temporal_filter_clamp_min": float(settings.temporal_filter_clamp_min),
-                "temporal_filter_confidence_mean": filter_confidence_mean,
-                "temporal_filter_alpha_mean": filter_alpha_mean,
-                "temporal_filter_alpha_max": filter_alpha_max,
-                "temporal_filter_history_delta_mean": filter_history_delta_mean,
-                "temporal_filter_clamp_delta_mean": filter_clamp_delta_mean,
-                "visibility_shadow_pcf_radius": int(settings.visibility_shadow_pcf_radius),
-                "reservoir_m_mean": m_mean,
-                "reservoir_m_max": m_max,
-            }
-            row.update(timing_fields)
-            row.update(compute_rgb_error_metrics(estimate, reference, valid_mask))
-            rows.append(row)
-    return rows
-
-
-def summarize_restir_rows(rows: list[dict[str, int | float | str]]) -> list[dict[str, int | float | str]]:
-    groups: dict[tuple[str, str, str], list[dict[str, int | float | str]]] = {}
-    for row in rows:
-        key = (str(row["asset_id"]), str(row["estimator"]), str(row["reference_quantity"]))
-        groups.setdefault(key, []).append(row)
-
-    summary: list[dict[str, int | float | str]] = []
-    for asset_id, estimator, quantity in sorted(groups):
-        group = groups[(asset_id, estimator, quantity)]
-        mae = [float(row["mae"]) for row in group]
-        rmse = [float(row["rmse"]) for row in group]
-        reuse = [float(row["reuse_fraction"]) for row in group]
-        pre_gate = [float(row["pre_gate_fraction"]) for row in group]
-        normal_gate = [float(row["normal_gate_pass_pre_gate_fraction"]) for row in group]
-        rgb_gate = [float(row["rgb_gate_pass_pre_gate_fraction"]) for row in group]
-        motion_gate = [float(row["motion_gate_pass_pre_gate_fraction"]) for row in group]
-        summary.append(
-            {
-                "asset_id": asset_id,
-                "estimator": estimator,
-                "reference_quantity": quantity,
-                "frame_count": len(group),
-                "mae_mean": _mean(mae),
-                "rmse_mean": _mean(rmse),
-                "pre_gate_fraction_mean": _mean(pre_gate),
-                "normal_gate_pass_pre_gate_fraction_mean": _mean(normal_gate),
-                "rgb_gate_pass_pre_gate_fraction_mean": _mean(rgb_gate),
-                "motion_gate_pass_pre_gate_fraction_mean": _mean(motion_gate),
-                "reuse_fraction_mean": _mean(reuse),
-            }
-        )
-    return summary
-
-
-def summarize_restir_timing_rows(rows: list[dict[str, int | float | str]]) -> dict[str, dict[str, float | int]]:
-    return _summarize_timing_group(rows)
-
-
-def summarize_restir_asset_timing_rows(rows: list[dict[str, int | float | str]]) -> dict[str, dict[str, dict[str, float | int]]]:
-    groups: dict[str, list[dict[str, int | float | str]]] = {}
-    for row in rows:
-        groups.setdefault(str(row["asset_id"]), []).append(row)
-    return {asset_id: _summarize_timing_group(group) for asset_id, group in sorted(groups.items())}
-
-
-def empty_temporal_lookup(gbuffer: GBuffer) -> TemporalLookup:
-    height, width = gbuffer.depth.shape
-    return TemporalLookup(
-        prev_pixels=torch.zeros((height, width, 2), dtype=torch.long, device=gbuffer.rgb.device),
-        valid_mask=torch.zeros((height, width), dtype=torch.bool, device=gbuffer.rgb.device),
-        pre_gate_mask=torch.zeros((height, width), dtype=torch.bool, device=gbuffer.rgb.device),
-        normal_pass_mask=torch.zeros((height, width), dtype=torch.bool, device=gbuffer.rgb.device),
-        rgb_pass_mask=torch.zeros((height, width), dtype=torch.bool, device=gbuffer.rgb.device),
-        motion_pass_mask=torch.zeros((height, width), dtype=torch.bool, device=gbuffer.rgb.device),
-        relative_depth_error=torch.full((height, width), float("inf"), dtype=gbuffer.rgb.dtype, device=gbuffer.rgb.device),
-        normal_dot=torch.zeros((height, width), dtype=gbuffer.rgb.dtype, device=gbuffer.rgb.device),
-        normal_abs_dot=torch.zeros((height, width), dtype=gbuffer.rgb.dtype, device=gbuffer.rgb.device),
-        rgb_distance=torch.full((height, width), float("inf"), dtype=gbuffer.rgb.dtype, device=gbuffer.rgb.device),
-        motion_pixels=torch.zeros((height, width, 2), dtype=gbuffer.rgb.dtype, device=gbuffer.rgb.device),
-    )
-
-
-def empty_temporal_filter_stats(gbuffer: GBuffer) -> TemporalFilterStats:
-    height, width = gbuffer.depth.shape
-    zeros = torch.zeros((height, width), dtype=gbuffer.rgb.dtype, device=gbuffer.rgb.device)
-    return TemporalFilterStats(
-        confidence=zeros,
-        alpha=zeros,
-        history_delta=zeros,
-        clamp_delta=zeros,
-    )
-
-
-def apply_confidence_clamped_temporal_filter(
-    gbuffer: GBuffer,
-    current: LightingEstimatorBuffers,
-    previous_filtered: LightingEstimatorBuffers,
-    lookup: TemporalLookup,
-    settings: RestirRenderSettings,
-) -> tuple[LightingEstimatorBuffers, TemporalFilterStats]:
-    _check_lookup_shapes_for_filter(lookup, gbuffer)
-    device = gbuffer.rgb.device
-    dtype = gbuffer.rgb.dtype
-
-    history = _gather_previous_rgb(previous_filtered.contribution_rgb.to(device=device, dtype=dtype), lookup)
-    current_contribution = current.contribution_rgb.to(device=device, dtype=dtype)
-    confidence = _temporal_filter_confidence(lookup, settings, dtype=dtype, device=device)
-    alpha = lookup.valid_mask.to(device=device, dtype=dtype) * float(settings.temporal_filter_blend_max) * confidence
-
-    current_mean = current_contribution.abs().mean(dim=-1)
-    clamp_radius = float(settings.temporal_filter_clamp_scale) * current_mean + float(settings.temporal_filter_clamp_min)
-    history_clamped = torch.minimum(
-        torch.maximum(history, current_contribution - clamp_radius[..., None]),
-        current_contribution + clamp_radius[..., None],
-    )
-    filtered = current_contribution * (1.0 - alpha[..., None]) + history_clamped * alpha[..., None]
-    filtered = torch.where(current.valid_mask.to(device=device)[..., None], filtered, current_contribution)
-
-    composite_lit = gbuffer.rgb.to(device=device, dtype=dtype) * float(settings.ambient) + filtered
-    composite = torch.where(current.valid_mask.to(device=device)[..., None], composite_lit, current.composite_rgb.to(device=device, dtype=dtype))
-    alpha_zero = alpha <= 0.0
-    filtered = torch.where(alpha_zero[..., None], current_contribution, filtered)
-    composite = torch.where(alpha_zero[..., None], current.composite_rgb.to(device=device, dtype=dtype), composite)
-
-    stats = TemporalFilterStats(
-        confidence=torch.where(lookup.valid_mask.to(device=device), confidence, torch.zeros_like(confidence)),
-        alpha=alpha,
-        history_delta=torch.mean(torch.abs(history - current_contribution), dim=-1),
-        clamp_delta=torch.mean(torch.abs(history - history_clamped), dim=-1),
-    )
-    return LightingEstimatorBuffers(contribution_rgb=filtered, composite_rgb=composite, valid_mask=current.valid_mask), stats
-
-
-def _check_lookup_shapes_for_filter(lookup: TemporalLookup, gbuffer: GBuffer) -> None:
-    image_shape = gbuffer.depth.shape
-    if lookup.prev_pixels.shape != (*image_shape, 2):
-        raise ValueError(f"Expected prev_pixels shape [H,W,2], got {tuple(lookup.prev_pixels.shape)}")
-    if lookup.valid_mask.shape != image_shape:
-        raise ValueError(f"Expected lookup valid mask shape {tuple(image_shape)}, got {tuple(lookup.valid_mask.shape)}")
-    if lookup.pre_gate_mask.shape != image_shape:
-        raise ValueError(f"Expected lookup pre-gate mask shape {tuple(image_shape)}, got {tuple(lookup.pre_gate_mask.shape)}")
-
-
-def _gather_previous_rgb(values: torch.Tensor, lookup: TemporalLookup) -> torch.Tensor:
-    if values.ndim != 3 or values.shape[-1] != 3:
-        raise ValueError(f"Expected previous filtered contribution shape [H,W,3], got {tuple(values.shape)}")
-    prev_height, prev_width, _ = values.shape
-    prev_x = lookup.prev_pixels[..., 0].to(device=values.device, dtype=torch.long).clamp(0, max(prev_width - 1, 0))
-    prev_y = lookup.prev_pixels[..., 1].to(device=values.device, dtype=torch.long).clamp(0, max(prev_height - 1, 0))
-    gathered = values.reshape(-1, 3)[(prev_y * prev_width + prev_x).reshape(-1)].reshape(*lookup.valid_mask.shape, 3)
-    return torch.where(lookup.valid_mask.to(values.device)[..., None], gathered, torch.zeros_like(gathered))
-
-
-def _temporal_filter_confidence(
-    lookup: TemporalLookup,
-    settings: RestirRenderSettings,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> torch.Tensor:
-    depth_error = lookup.relative_depth_error.to(device=device, dtype=dtype)
-    if settings.depth_tolerance == 0.0:
-        depth_conf = (depth_error <= 0.0).to(dtype=dtype)
-    else:
-        depth_conf = (1.0 - depth_error / float(settings.depth_tolerance)).clamp(0.0, 1.0)
-
-    if settings.temporal_normal_threshold is None:
-        normal_conf = torch.ones_like(depth_conf)
-    else:
-        normal_conf = lookup.normal_abs_dot.to(device=device, dtype=dtype).clamp(0.0, 1.0)
-
-    if settings.temporal_rgb_threshold is None:
-        rgb_conf = torch.ones_like(depth_conf)
-    elif settings.temporal_rgb_threshold == 0.0:
-        rgb_conf = (lookup.rgb_distance.to(device=device, dtype=dtype) <= 0.0).to(dtype=dtype)
-    else:
-        rgb_conf = (1.0 - lookup.rgb_distance.to(device=device, dtype=dtype) / float(settings.temporal_rgb_threshold)).clamp(0.0, 1.0)
-
-    motion_magnitude = torch.linalg.norm(lookup.motion_pixels.to(device=device, dtype=dtype), dim=-1)
-    if settings.temporal_max_motion_pixels is None:
-        motion_conf = torch.ones_like(depth_conf)
-    elif settings.temporal_max_motion_pixels == 0.0:
-        motion_conf = (motion_magnitude <= 0.0).to(dtype=dtype)
-    else:
-        motion_conf = (1.0 - motion_magnitude / float(settings.temporal_max_motion_pixels)).clamp(0.0, 1.0)
-
-    confidence = torch.minimum(torch.minimum(depth_conf, normal_conf), torch.minimum(rgb_conf, motion_conf))
-    return torch.where(lookup.valid_mask.to(device=device), confidence, torch.zeros_like(confidence))
-
-
-def reservoir_m_stats(reservoir: ReservoirState | TemporalReservoirState) -> tuple[float, int]:
-    valid = reservoir.valid_mask.detach().cpu().to(torch.bool)
-    values = reservoir.M.detach().cpu()[valid]
-    if values.numel() == 0:
-        return 0.0, 0
-    return float(values.float().mean()), int(values.max())
-
-
-def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
-    data = values.detach().cpu()
-    valid = mask.detach().cpu().to(torch.bool) & torch.isfinite(data)
-    if not bool(valid.any()):
-        return 0.0
-    return float(data[valid].float().mean())
-
-
-def all_numeric_finite(rows: list[dict[str, int | float | str]]) -> bool:
-    for row in rows:
-        for value in row.values():
-            if isinstance(value, float) and not math.isfinite(value):
-                return False
-    return True
-
-
 def _check_settings(settings: RestirRenderSettings) -> None:
     if settings.target_mode not in ("diffuse", "visibility"):
         raise ValueError(f"Unsupported target_mode '{settings.target_mode}'.")
@@ -848,26 +431,6 @@ def _check_settings(settings: RestirRenderSettings) -> None:
         raise ValueError(f"Expected non-negative visibility_shadow_pcf_radius, got {settings.visibility_shadow_pcf_radius}")
     if not 0.0 < settings.visibility_shadow_bbox_percentile <= 1.0:
         raise ValueError(f"Expected visibility_shadow_bbox_percentile in (0,1], got {settings.visibility_shadow_bbox_percentile}")
-
-
-def _mean(values: list[float]) -> float:
-    return sum(values) / float(len(values)) if values else 0.0
-
-
-def _summarize_timing_group(rows: list[dict[str, int | float | str]]) -> dict[str, dict[str, float | int]]:
-    summary: dict[str, dict[str, float | int]] = {}
-    for field in RESTIR_TIMING_FIELDS:
-        values = [float(row[field]) for row in rows if field in row and math.isfinite(float(row[field]))]
-        summary[field] = {
-            "mean": _mean(values),
-            "max": max(values) if values else 0.0,
-            "count": len(values),
-        }
-    return summary
-
-
-def _format_optional_float(value: float | None) -> float | str:
-    return "none" if value is None else float(value)
 
 
 def _effective_temporal_history_m_cap(settings: RestirRenderSettings) -> int:
@@ -912,12 +475,6 @@ def _compute_proposal_distribution(
             pcf_radius=settings.visibility_shadow_pcf_radius,
         )
     raise ValueError(f"Unsupported target_mode '{settings.target_mode}'.")
-
-
-def _effective_proposal(settings: RestirRenderSettings) -> str:
-    if settings.target_mode == "visibility":
-        return "visibility_geometric"
-    return "geometric"
 
 
 def _visibility_evaluator(

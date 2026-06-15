@@ -12,7 +12,7 @@ import torch
 from interactive.layers import viewer_computed_views, viewer_render_requirements
 from restir_gs.lighting.asset_lights import make_asset_scaled_world_lights, world_lights_to_camera_lights
 from restir_gs.lighting.deferred import LightingBuffers, shade_deferred_blinn_phong
-from restir_gs.lighting.visibility import ShadowMapBundle, make_shadow_map_bundle
+from restir_gs.lighting.shadow_maps import ShadowMapBundle, make_shadow_map_bundle
 from restir_gs.render.gbuffer import GBuffer, make_pseudo_gbuffer
 from restir_gs.render.gsplat_renderer import render_rgbd
 from restir_gs.render.orbit_camera import (
