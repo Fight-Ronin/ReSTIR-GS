@@ -169,7 +169,6 @@ interactive/   matplotlib and browser viewer frontends
 gs_gen/        standalone local Gaussian asset generation helper
 scripts/       Windows runners and active demos
 docs/          maintained architecture, workflow, and handoff docs
-tests/         unit and smoke coverage
 outputs/       ignored assets, renders, metrics, and snapshots
 ```
 
@@ -217,12 +216,12 @@ Useful checks:
 
 ```powershell
 conda activate restirgs
-python -m pytest -q
 python -m compileall restir_gs scripts interactive gs_gen
 python -m pip check
 ```
 
-See `tests/README.md` for targeted test groups.
+The full validation suite is retained on the `dev` branch. The published
+`main` branch intentionally excludes tracked test files.
 
 ## Current Boundaries
 
@@ -232,7 +231,7 @@ See `tests/README.md` for targeted test groups.
 - Temporal reuse is previous-frame only.
 - `temporal_filtered_ris` is a conservative stabilization layer, not proof that temporal reuse wins for every frame.
 - The interactive viewer is an inspection tool, not a production real-time renderer.
-- Diffuse rendering is retained for tests/debugging, but the active baseline is visibility-aware direct lighting.
+- Diffuse rendering is retained for diagnostics/debugging, but the active baseline is visibility-aware direct lighting.
 
 ## More Documentation
 
