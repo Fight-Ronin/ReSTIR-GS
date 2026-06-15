@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 from PIL import Image
 import pytest
 import torch
@@ -95,12 +96,10 @@ def _make_tiny_aligned_dataset(tmp_path):
     for directory in ["images", "custom_depth", "depth_16bit", "custom_normals", "custom_masks"]:
         (root / directory).mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (2, 2), (128, 64, 32)).save(root / "images" / "frame.png")
-    Image.fromarray(__import__("numpy").array([[255, 0], [0, 255]], dtype="uint8"), mode="L").convert("RGBA").save(
-        root / "custom_masks" / "m.png"
-    )
-    depth = __import__("numpy").array([[10000, 20000], [30000, 40000]], dtype="uint16")
-    Image.fromarray(depth, mode="I;16").save(root / "depth_16bit" / "frame.png")
-    Image.fromarray(depth, mode="I;16").save(root / "custom_depth" / "d.png")
+    Image.fromarray(np.array([[255, 0], [0, 255]], dtype="uint8")).convert("RGBA").save(root / "custom_masks" / "m.png")
+    depth = np.array([[10000, 20000], [30000, 40000]], dtype="uint16")
+    Image.fromarray(depth).save(root / "depth_16bit" / "frame.png")
+    Image.fromarray(depth).save(root / "custom_depth" / "d.png")
     Image.new("RGB", (2, 2), (128, 128, 255)).save(root / "custom_normals" / "n.png")
     transforms = {
         "fl_x": 10.0,
