@@ -156,7 +156,7 @@ restir_gs/     renderer, lighting, ReSTIR, metrics, and eval helpers
 interactive/   matplotlib and browser viewer frontends
 gs_gen/        standalone local Gaussian asset generation helper
 scripts/       Windows runners and active demos
-docs/          current architecture, workflow, handoff, and project notes
+docs/          maintained architecture, workflow, and handoff docs
 tests/         unit and smoke coverage
 outputs/       ignored assets, renders, metrics, and snapshots
 ```

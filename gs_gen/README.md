@@ -33,14 +33,6 @@ data/gs_gen/
 outputs/gsgen/
 ```
 
-The optional Windows COLMAP compatibility wrapper expects a local no-CUDA COLMAP bundle at:
-
-```text
-gs_gen/tools/colmap-4.0.4-nocuda/bin/colmap.exe
-```
-
-The committed files under `gs_gen/tools/` are wrappers/helpers only; the extracted COLMAP directory should remain untracked.
-
 ## Probe Sources
 
 ```powershell

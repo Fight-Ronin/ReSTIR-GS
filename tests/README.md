@@ -62,5 +62,5 @@ manifest.
   surfaces.
 - Do not remove Lambertian/Blinn-Phong diagnostic tests unless the viewer and
   smoke paths no longer expose those modes.
-- Keep selected-fast tests tied to explicit experiment flags and quality/FPS
-  harnesses; do not make selected-fast look like the default renderer policy.
+- Keep test coverage tied to the active renderer, viewer, asset manifest, and
+  standalone `gs_gen` helper.

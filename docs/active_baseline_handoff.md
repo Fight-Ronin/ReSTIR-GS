@@ -146,12 +146,12 @@ The main cost is not `gsplat` RGB+D rendering, pseudo G-buffer generation, repro
 ## Recommended Future Work
 
 The project is currently in wrap-up mode. If work continues, keep it narrowly
-focused on realtime visibility performance and validate against the selected-fast
-quality harness before changing renderer defaults:
+focused on realtime visibility performance and validate on a small asset matrix
+before changing renderer defaults:
 
 ```text
 1. GPU performance engineering for visibility proposal and RIS light evaluation.
-2. Fused or batched kernels for selected/dense visible direct-light contribution evaluation.
+2. Fused or batched kernels for visible direct-light contribution evaluation.
 3. Small asset-matrix quality checks before adding or keeping new renderer knobs.
 ```
 

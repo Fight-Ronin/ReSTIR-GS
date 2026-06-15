@@ -21,8 +21,6 @@ configs/aligned_assets.json
 ```text
 scripts/download_aligned_asset.py
 scripts/download_aligned_splat.py
-scripts/bench_realtime_display_fps.py
-scripts/eval_selected_fast_quality.py
 scripts/demo_24_aligned_asset_smoke_matrix.py
 scripts/demo_26_aligned_restir_renderer.py
 scripts/demo_28_active_renderer_snapshot.py
@@ -78,10 +76,6 @@ scripts/run_interactive_web_viewer_windows.bat
 - `metrics.py`: ReSTIR metric rows, timing summaries, finite-value checks, and small metric helpers.
 - `renderer.py`: active renderer composition layer and compatibility facade. It exposes a reference-free display frame path for interactive inspection and an evaluation frame path for all-lights references.
 
-Selected-only visibility is deliberately kept outside the default renderer. Use
-`scripts/bench_realtime_display_fps.py --experimental-selected-visibility` and
-`scripts/eval_selected_fast_quality.py` to profile or validate it.
-
 `restir_gs.eval`
 
 - `gbuffer_validation.py`: aligned modality comparison helpers used by smoke matrix.
@@ -90,7 +84,7 @@ Selected-only visibility is deliberately kept outside the default renderer. Use
 
 ## Removed Legacy Surface
 
-Synthetic demos, Voxel51 intake, single-view PLY camera probe, real-asset ablations, spatial MIS diagnostics, standalone visibility smoke scripts, and Apple-specific download scripts have been removed from the active source tree. The retained workflow starts from the aligned asset manifest.
+Historical phase notes, closeout experiment scripts, synthetic demos, Voxel51 intake, single-view PLY camera probe, real-asset ablations, spatial MIS diagnostics, standalone visibility smoke scripts, and Apple-specific download scripts have been removed from the deliverable surface. The retained workflow starts from the aligned asset manifest.
 
 ## Display And Evaluation Boundary
 

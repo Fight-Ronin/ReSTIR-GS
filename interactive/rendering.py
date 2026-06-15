@@ -427,7 +427,7 @@ def view_image(result: ViewerRenderResult, view: str) -> tuple[str, np.ndarray]:
 
 def viewer_save_metadata(settings: ViewerSettings, result: ViewerRenderResult, asset: ViewerAsset) -> dict[str, object]:
     return {
-        "phase": "phase25_interactive_viewer",
+        "source": "interactive_viewer",
         "asset_label": asset.label,
         "source_path": str(asset.source_path),
         "asset_metadata": asset.metadata,
