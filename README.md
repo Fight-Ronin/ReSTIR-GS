@@ -2,6 +2,10 @@
 
 Windows-first research prototype for visibility-aware ReSTIR on registered 3D Gaussian Splatting assets.
 
+<p align="center">
+  <img src="docs/assets/readme_hero.png" alt="ReSTIR-GS visibility-aware ReSTIR renderer overview">
+</p>
+
 The current implementation has one active path:
 
 ```text
@@ -20,6 +24,14 @@ configs/aligned_assets.json
 ```
 
 The preferred output is `temporal_filtered_ris`. `initial_ris` is the current-frame estimate, and `temporal_ris` is retained as a reservoir-combine debug output.
+
+## Visual Overview
+
+These README images are built from local renderer outputs and committed under `docs/assets/` so the project renders without requiring downloaded datasets.
+
+![ReSTIR-GS active system path](docs/assets/readme_pipeline.png)
+
+![ReSTIR-GS aligned asset snapshots](docs/assets/readme_results_grid.png)
 
 ## Quick Start
 
