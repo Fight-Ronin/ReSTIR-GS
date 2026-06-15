@@ -210,6 +210,8 @@ python -m compileall restir_gs scripts interactive gs_gen
 python -m pip check
 ```
 
+See `tests/README.md` for targeted test groups.
+
 ## Current Boundaries
 
 - The active renderer starts from registered aligned assets in `configs/aligned_assets.json`.
@@ -225,6 +227,7 @@ python -m pip check
 Start here:
 
 ```text
+docs/README.md
 docs/active_workflow.md
 docs/active_baseline_handoff.md
 docs/current_architecture.md

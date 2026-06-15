@@ -79,6 +79,69 @@ Interpretation:
 - Therefore fixed `K=8/top32/mix0.8` is not a good default or recommended
   follow-up policy.
 
+## Post-Cleanup 5-Asset Sanity
+
+After the visibility and renderer support-module cleanup, a small CUDA sanity
+run rechecked the retained dense-cache and selected-fast paths.
+
+Setup:
+
+```text
+assets = dxgl_apple, dxgl_cash_register, dxgl_drill, dxgl_fire_extinguisher, dxgl_led_lightbulb
+resolution = 64x64
+frames = 49,50
+lights = 4
+candidate_count = 2
+shadow_resolution = 32
+device = cuda
+```
+
+Outputs:
+
+```text
+outputs/final_sanity_display_fps_dense_5asset/restir_display_fps_summary.json
+outputs/final_sanity_display_fps_5asset/restir_display_fps_summary.json
+outputs/final_sanity_selected_fast_quality_5asset/selected_fast_quality_summary.json
+```
+
+Display path result:
+
+```text
+path           mean_gpu_fps  mean_frame_gpu_ms
+dense_cache    27.58         66.94
+selected_fast  36.40         51.60
+```
+
+Per-asset display FPS:
+
+```text
+asset                  dense_fps  selected_fps  speedup
+dxgl_apple              5.19        7.22        1.39x
+dxgl_cash_register     40.55       44.27        1.09x
+dxgl_drill             31.92       52.76        1.65x
+dxgl_fire_extinguisher 28.29       24.16        0.85x
+dxgl_led_lightbulb     31.97       53.60        1.68x
+```
+
+Quality sanity result:
+
+```text
+rows = 60
+nonfinite_numeric_values = 0
+dense_cache temporal_filtered composite_mae_mean = 0.00048
+selected_fast temporal_filtered composite_mae_mean = 0.01313
+```
+
+Interpretation:
+
+- The selected-fast display path still shows an average FPS benefit in this
+  low-resolution sanity run.
+- The `dxgl_fire_extinguisher` case regressed in FPS, so selected-fast is not a
+  universal performance win.
+- The selected-fast quality cost remains visible relative to dense-cache.
+- This supports the final policy: keep selected-fast as an explicit experiment,
+  not a default renderer mode.
+
 ## Final Recommendation
 
 Stop here for this project phase.
@@ -99,4 +162,3 @@ The renderer should stay conservative:
 - Selected-fast remains an explicit experiment.
 - Future work should start from the quality harness and use a small asset matrix
   before adding new renderer knobs.
-
