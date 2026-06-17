@@ -32,7 +32,7 @@ visibility_shadow_pcf_radius = 1
 
 `initial_ris` is the fresh current-frame estimate. `temporal_ris` is retained as a reservoir-combine debug path. Diffuse mode is retained for compatibility/debugging, but it is not the preferred active output.
 
-## Run The Baseline
+## Published Main Workflow
 
 Download aligned testing assets first if needed:
 
@@ -41,42 +41,32 @@ python scripts/download_aligned_asset.py --asset-set testing
 python scripts/download_aligned_splat.py --asset-set testing
 ```
 
-Run the full active baseline demo:
+Inspect a registered aligned asset:
 
 ```powershell
-scripts\run_active_baseline_demo_windows.bat
+$env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
+scripts\run_interactive_viewer_windows.bat
 ```
 
-This runs:
+The full validation and test runners are retained on the `dev` branch. The
+published `main` branch keeps the deliverable inspection surface only.
+
+## Viewer Outputs
 
 ```text
-scripts/run_active_validation_windows.bat
-scripts/run_active_demo_snapshot_windows.bat
+outputs/interactive_viewer/current_camera.json
+outputs/interactive_viewer/current_rgb.png
+outputs/interactive_viewer/current_alpha.png
+outputs/interactive_viewer/current_normal.png
+outputs/interactive_viewer/current_blinn_phong.png
+outputs/interactive_viewer/current_visibility_ris.png
+outputs/interactive_viewer/current_visibility_reference.png
+outputs/interactive_viewer/current_visibility_error.png
+outputs/interactive_viewer/interactive_viewer_save_summary.json
 ```
 
-## Expected Outputs
-
-```text
-outputs/aligned_smoke/aligned_asset_smoke_rows.csv
-outputs/aligned_smoke/aligned_asset_smoke_summary.json
-outputs/aligned_restir/restir_renderer_rows.csv
-outputs/aligned_restir/restir_renderer_summary.json
-outputs/aligned_restir/<asset_id>/contact.png
-outputs/active_demo/active_renderer_snapshot_contact.png
-outputs/active_demo/active_renderer_snapshot_summary.json
-```
-
-Expected active validation:
-
-```text
-aligned smoke matrix rows = 76
-active renderer rows = 72
-target_mode = visibility
-proposal = visibility_geometric
-all_numeric_finite = true
-timing_summary exists
-asset_timing exists
-```
+The visibility reference and error images are written only when
+`--save-visibility-reference` is requested.
 
 ## Interactive Inspection
 
@@ -111,14 +101,10 @@ Ctrl+S         save current camera and previews
 q              quit
 ```
 
-## Current Performance Readout
+## Development Validation Readout
 
-Performance timing is reported with CUDA events in:
-
-```text
-outputs/aligned_restir/restir_renderer_summary.json
-outputs/active_demo/active_renderer_snapshot_summary.json
-```
+Development validation on the `dev` branch reports performance timing with CUDA
+events in renderer summary artifacts.
 
 `frame_wall_ms` is auxiliary wall-clock context. GPU timing fields are the primary performance numbers.
 
@@ -145,9 +131,9 @@ The main cost is not `gsplat` RGB+D rendering, pseudo G-buffer generation, repro
 
 ## Recommended Future Work
 
-The project is currently in wrap-up mode. If work continues, keep it narrowly
-focused on realtime visibility performance and validate on a small asset matrix
-before changing renderer defaults:
+The project is currently in wrap-up mode. If work continues, use the `dev`
+branch and keep it narrowly focused on realtime visibility performance. Validate
+on a small asset matrix before changing renderer defaults:
 
 ```text
 1. GPU performance engineering for visibility proposal and RIS light evaluation.

@@ -43,7 +43,9 @@ conda activate restirgs
 python -m pip install -r requirements.txt
 ```
 
-On Windows, prefer the `.bat` runners for CUDA and `gsplat` work. They set the Visual Studio/CUDA environment, torch extension cache, and `gsplat` Windows patch check. The runners default to:
+On Windows, use the `.bat` viewer runners for CUDA and `gsplat` inspection.
+They set the Visual Studio/CUDA environment, torch extension cache, and
+`gsplat` Windows patch check. The current renderer policy is:
 
 ```text
 target_mode = visibility
@@ -62,13 +64,15 @@ python scripts/download_aligned_asset.py --asset-set testing
 python scripts/download_aligned_splat.py --asset-set testing
 ```
 
-Run the active baseline:
+Inspect a registered aligned asset:
 
 ```powershell
-scripts\run_active_baseline_demo_windows.bat
+$env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
+scripts\run_interactive_viewer_windows.bat
 ```
 
-This runs validation and then builds the demo/performance snapshot.
+The full validation and test runners are retained on the `dev` branch. The
+published `main` branch keeps the deliverable inspection surface only.
 
 ## Active Assets
 
@@ -83,21 +87,26 @@ asset_sets.testing = dxgl_apple, dxgl_cash_register, dxgl_drill, dxgl_fire_extin
 
 Downloaded/source assets stay under ignored `data/`; generated outputs stay under ignored `outputs/`.
 
-## Outputs
+## Generated Outputs
 
-The baseline writes:
+Viewer saves write ignored local artifacts under:
 
 ```text
-outputs/aligned_smoke/aligned_asset_smoke_rows.csv
-outputs/aligned_smoke/aligned_asset_smoke_summary.json
-outputs/aligned_restir/restir_renderer_rows.csv
-outputs/aligned_restir/restir_renderer_summary.json
-outputs/aligned_restir/<asset_id>/contact.png
-outputs/active_demo/active_renderer_snapshot_contact.png
-outputs/active_demo/active_renderer_snapshot_summary.json
+outputs/interactive_viewer/current_camera.json
+outputs/interactive_viewer/current_rgb.png
+outputs/interactive_viewer/current_alpha.png
+outputs/interactive_viewer/current_normal.png
+outputs/interactive_viewer/current_blinn_phong.png
+outputs/interactive_viewer/current_visibility_ris.png
+outputs/interactive_viewer/current_visibility_reference.png
+outputs/interactive_viewer/current_visibility_error.png
+outputs/interactive_viewer/interactive_viewer_save_summary.json
 ```
 
-`restir_renderer_summary.json` and `active_renderer_snapshot_summary.json` contain CUDA-event timing summaries. Treat GPU timing fields as the performance source of truth; `frame_wall_ms` is auxiliary wall-clock context.
+The visibility reference and error images are written only when
+`--save-visibility-reference` is requested. Historical validation CSVs,
+demo snapshots, and performance summaries are maintained on the `dev` branch,
+not shipped as active commands on published `main`.
 
 ## Interactive Inspection
 
@@ -167,7 +176,7 @@ data/          ignored local data root, with tracked layout notes
 restir_gs/     renderer, lighting, ReSTIR, metrics, and eval helpers
 interactive/   matplotlib and browser viewer frontends
 gs_gen/        standalone local Gaussian asset generation helper
-scripts/       Windows runners and active demos
+scripts/       asset download helpers and interactive viewer runners
 docs/          maintained architecture, workflow, and handoff docs
 outputs/       ignored assets, renders, metrics, and snapshots
 ```
@@ -231,7 +240,7 @@ The full validation suite is retained on the `dev` branch. The published
 - Temporal reuse is previous-frame only.
 - `temporal_filtered_ris` is a conservative stabilization layer, not proof that temporal reuse wins for every frame.
 - The interactive viewer is an inspection tool, not a production real-time renderer.
-- Diffuse rendering is retained for diagnostics/debugging, but the active baseline is visibility-aware direct lighting.
+- Diffuse rendering is retained for diagnostics/debugging, but the active deliverable path is visibility-aware direct lighting.
 
 ## More Documentation
 

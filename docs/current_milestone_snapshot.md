@@ -2,24 +2,24 @@
 
 ## Status
 
-The current baseline is an aligned, registry-driven ReSTIR-GS renderer over the DXGL testing asset set.
+The current baseline is an aligned, registry-driven ReSTIR-GS renderer over the
+DXGL testing asset set.
 
-Active command:
+Published `main` command:
 
 ```powershell
-scripts\run_active_baseline_demo_windows.bat
+$env:RESTIRGS_VIEWER_ASSET_ID="dxgl_apple"
+scripts\run_interactive_viewer_windows.bat
 ```
 
 Expected high-level result:
 
 ```text
-aligned smoke matrix rows: 76
-active renderer rows: 72
-target_mode: visibility
-proposal: visibility_geometric
-all numeric metrics finite: true
-timing_summary present: true
-active demo snapshot present: true
+aligned asset loads from configs/aligned_assets.json
+viewer renders RGB/depth-derived diagnostic layers
+visibility RIS display output is available on request
+reference/error output is opt-in
+full validation and tests are retained on dev
 ```
 
 ## Active Algorithm
@@ -39,14 +39,14 @@ Performance readout is now attached to the active renderer output through CUDA-e
 
 ## Display / Evaluation Split
 
-The renderer now has two clear surfaces:
+The renderer has two clear surfaces:
 
 ```text
 display path     -> ReSTIR display buffers, no all-lights reference
 evaluation path  -> display buffers + all-lights reference + metrics/error maps
 ```
 
-The interactive viewer uses display-oriented output by default. `--save-visibility` writes the visibility RIS display image only; `--save-visibility-reference` explicitly computes and writes reference/error images.
+The interactive viewer uses display-oriented output by default. `--save-visibility` writes the visibility RIS display image only; `--save-visibility-reference` explicitly computes and writes reference/error images. Published `main` exposes the inspection surface; `dev` retains full evaluation runners and tests.
 
 ## Current Temporal Policy
 

@@ -21,14 +21,8 @@ configs/aligned_assets.json
 ```text
 scripts/download_aligned_asset.py
 scripts/download_aligned_splat.py
-scripts/demo_24_aligned_asset_smoke_matrix.py
-scripts/demo_26_aligned_restir_renderer.py
-scripts/demo_28_active_renderer_snapshot.py
-scripts/run_active_baseline_demo_windows.bat
-scripts/run_active_validation_windows.bat
-scripts/run_aligned_asset_smoke_matrix_windows.bat
-scripts/run_aligned_restir_renderer_windows.bat
-scripts/run_active_demo_snapshot_windows.bat
+scripts/patch_gsplat_windows.py
+scripts/_setup_windows_cuda_env.bat
 scripts/run_interactive_viewer_windows.bat
 scripts/run_interactive_web_viewer_windows.bat
 ```
@@ -78,14 +72,14 @@ scripts/run_interactive_web_viewer_windows.bat
 
 `restir_gs.eval`
 
-- `gbuffer_validation.py`: aligned modality comparison helpers used by smoke matrix.
-- `dxgl_sampling_benchmark.py`: small sampling smoke helper used by smoke matrix.
-- `active_renderer_snapshot.py`: active renderer demo/performance snapshot helpers.
+- `gbuffer_validation.py`: aligned modality comparison helpers retained for development validation.
+- `dxgl_sampling_benchmark.py`: small sampling smoke helper retained for development validation.
+- `active_renderer_snapshot.py`: active renderer demo/performance snapshot helpers retained for development validation.
 
 ## Removed Legacy Surface
 
-Historical phase notes, closeout experiment scripts, synthetic demos, Voxel51 intake, single-view PLY camera probe, real-asset ablations, spatial MIS diagnostics, standalone visibility smoke scripts, and Apple-specific download scripts have been removed from the deliverable surface. The retained workflow starts from the aligned asset manifest.
+Historical phase notes, closeout experiment scripts, synthetic demos, Voxel51 intake, single-view PLY camera probe, real-asset ablations, spatial MIS diagnostics, standalone visibility smoke scripts, Apple-specific download scripts, and published-main validation/demo runner scripts have been removed from the deliverable surface. The retained workflow starts from the aligned asset manifest.
 
 ## Display And Evaluation Boundary
 
-Interactive inspection should use display-oriented outputs unless reference/error images are explicitly requested. The active validation and demo snapshot remain evaluation-oriented because they need all-lights references, CSV metrics, and error maps.
+Interactive inspection should use display-oriented outputs unless reference/error images are explicitly requested. Published `main` exposes the inspection path. Evaluation-oriented validation, CSV metrics, demo snapshots, and test files are retained on the `dev` branch.
